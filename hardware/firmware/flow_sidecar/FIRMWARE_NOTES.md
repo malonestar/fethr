@@ -9,14 +9,19 @@ macro-keyboard sidecar for the fethr dictation app.
 > **Version numbering.** 0.1.0 is the first public release and matches the app's
 > version. Sections below still refer to "v2" and "v2.1" where they describe when a
 > feature arrived during development — those were internal numbers for what shipped
-> as 0.1.0, and they are kept because the reasoning is attached to them.
+> as 0.1.0, and they are kept because the reasoning is attached to them. **"0.2.0"
+> labels the companion link (§9) and "0.3.0" the key legend and the animations it
+> feeds (§9a)** — work done since that release. `FLOW_SIDECAR_VERSION` is still
+> `0.1.0`; the version moves when an image is cut, not when a feature lands.
 
-> **Scope.** 0.1.0 builds the **FLOW layer only** (`FLOW_EXTRA_LAYERS 0` in
-> `config.h`). MEDIA, EDIT and MOUSE are complete and compile — set the flag to 1 —
-> but have never run on hardware. With `LAYER_COUNT == 1` the Chain Key's long hold
-> is inert: no LED flash, no panel scroll, no layer change, and the tap and
-> double-tap still fire on release. Everything that walks the layer table reads
-> `LAYER_COUNT`, so the flag is the whole change.
+> **Scope.** The tree — and `bin/fethr-sidecar-0.1.0/` as rebuilt for the key legend —
+> now sets **`FLOW_EXTRA_LAYERS 1`**: all four layers (FLOW, MEDIA, EDIT, MOUSE). The
+> original 0.1.0 image built FLOW alone. MEDIA/EDIT/MOUSE compile and are complete but
+> have had far less time on hardware than FLOW; set the flag back to `0` for the
+> single-layer build. With `LAYER_COUNT == 1` the Chain Key's long hold is inert: no
+> LED flash, no panel scroll, no layer change, and the tap and double-tap still fire on
+> release. Everything that walks the layer table reads `LAYER_COUNT`, so the flag is
+> the whole change.
 
 If you just want to flash the prebuilt image, you do not need this file:
 see [`../../FLASH.md`](../../FLASH.md).
@@ -35,17 +40,27 @@ firmware/
   pio/                          <-- EDIT HERE
     platformio.ini
     include/  config.h  actions.h  glyphs.h  sidecar.h  settings.h  serial_proto.h
+              companion.h
     src/      main.cpp  chain.cpp  mono.cpp  leds.cpp  layers.cpp  actions.cpp
-              glyphs.cpp  settings.cpp  serial_proto.cpp
+              glyphs.cpp  settings.cpp  serial_proto.cpp  companion.cpp
     tools/    sync_ino.ps1      <-- regenerates the sketch folder
     .gitignore                  <-- .pio/ is a build dir, never commit it
+  companion-atoms3r/            <-- the companion display, a SEPARATE project
+    platformio.ini                  (AtomS3R + M5Unified; §9)
+    include/  companion_proto.h
+    src/      main.cpp
   flow_sidecar/                 <-- GENERATED (plus this FIRMWARE_NOTES.md)
     flow_sidecar.ino  (= src/main.cpp)
-    config.h actions.h glyphs.h sidecar.h settings.h serial_proto.h
+    config.h actions.h glyphs.h sidecar.h settings.h serial_proto.h companion.h
     chain.cpp mono.cpp leds.cpp layers.cpp actions.cpp glyphs.cpp
-    settings.cpp serial_proto.cpp
+    settings.cpp serial_proto.cpp companion.cpp
     FIRMWARE_NOTES.md           <-- not generated
 ```
+
+`sync_ino.ps1` globs `include/*.h` and `src/*.cpp`, so a new module is picked up
+with no edit to the script. `companion-atoms3r/` is **not** synced into the sketch
+folder: it is a different board with a different library set and would not compile
+beside the DualKey sources.
 
 Regenerate after any change under `pio/`:
 
@@ -68,6 +83,7 @@ puts `include/` on the search path) and under the Arduino IDE (which compiles ev
 | `glyphs.cpp` | 8×8 bitmaps + the two generated panel views |
 | **`settings.cpp`** | **v2.1** — the mutable `RuntimeConfig`, its defaults, NVS persistence |
 | **`serial_proto.cpp`** | **v2.1** — the host settings protocol *and* the `?` console (one owner for the CDC port) |
+| **`companion.cpp`** | **0.2.0** — the optional companion-display UART link: port selection, TX/RX probe, events out, commands in (§9) |
 | `config.h` | Every tunable: pins, bus, timings, deadzones, layer-table *shape*. Since v2.1 most behavioural constants here are **defaults for `g_cfg`**, tagged as such inline |
 | `settings.h` | `RuntimeConfig` + the NVS blob identity/version |
 | `serial_proto.h` | Protocol string constants + the module's design contract |
@@ -245,33 +261,55 @@ chain. Node order does not matter — the firmware enumerates and dispatches by 
 
 ---
 
-## 4. Build record (0.1.0, the shipped image)
+## 4. Build record
 
-`FLOW_EXTRA_LAYERS 0` — this is what `bin/fethr-sidecar-0.1.0/` contains:
+### 4.0 Current tree = the shipped image (`FLOW_EXTRA_LAYERS 1`, `FLOW_COMPANION 1`)
+
+Since the key-legend work (§9a) the tree and `bin/fethr-sidecar-0.1.0/` are the same
+build; there is no longer a separate "shipped" configuration to record.
 
 ```
-RAM:   [==        ]  18.1% (used 59288 bytes from 327680 bytes)
-Flash: [=         ]  12.8% (used 427890 bytes from 3342336 bytes)
+RAM:   [==        ]  18.3% (used 59912 bytes from 327680 bytes)
+Flash: [=         ]  13.0% (used 433786 bytes from 3342336 bytes)
 ```
 
 | Artifact | Bytes | Flash offset |
 |---|---:|---|
-| `firmware.factory.bin` (all of the below, merged) | 503,456 | `0x0` |
+| `firmware.factory.bin` (all of the below, merged) | 509,856 | `0x0` |
 | `bootloader.bin` | 19,968 | `0x0` |
 | `partitions.bin` | 3,072 | `0x8000` |
 | `boot_app0.bin` (from the core's `tools/partitions/`) | 8,192 | `0xE000` |
-| `firmware.bin` | 437,920 | `0x10000` |
+| `firmware.bin` | 444,320 | `0x10000` |
 
 The offsets are the ones PlatformIO printed while merging the factory image, and
-`0x10000 + 437,920 = 503,456` — the merged image is contiguous from 0.
+`0x10000 + 444,320 = 509,856` — the merged image is contiguous from 0.
 
-With `FLOW_EXTRA_LAYERS 1` (also verified to compile clean): RAM unchanged at
-59,288 B, flash 428,062 B — **+172 B** for the three extra layer rows.
+Cost of the legend work against the previous `FLOW_EXTRA_LAYERS 1` + companion build
+(59,776 B / 432,494 B): **+136 B RAM, +1,292 B flash** — the wider companion output
+buffer, the label/legend tables and the two new event builders.
 
-Both builds are zero-warning from `src/` under `-Wall -Wextra`. The only warnings in
-a full build are six copies of `M5Chain/src/ChainBuzzer/ChainBuzzer.hpp:155:
+Still zero warnings from `src/` under `-Wall -Wextra`. The only warnings in a full
+build are **seven** copies of `M5Chain/src/ChainBuzzer/ChainBuzzer.hpp:155:
 'note_names' defined but not used` — one per translation unit that includes
-`M5Chain.h`, in a library header this firmware does not use.
+`M5Chain.h`, and `companion.cpp` is the seventh. That count rising when you add a
+module is expected and is not a regression.
+
+The companion firmware's own build record is in §9.
+
+### 4.1 Earlier build records, for comparison
+
+| Configuration | RAM | Flash |
+|---|---:|---:|
+| `FLOW_EXTRA_LAYERS 0`, no companion (the original 0.1.0 image) | 59,288 | 427,890 |
+| `FLOW_EXTRA_LAYERS 1`, no companion | 59,288 | 428,062 |
+| `FLOW_EXTRA_LAYERS 1` + companion link (0.2.0) | 59,776 | 432,494 |
+| `FLOW_EXTRA_LAYERS 1` + companion link + key legend (0.3.0) | 59,912 | 433,786 |
+
+So the three extra layers cost **+172 B** flash and no RAM, the companion link
+**+488 B RAM / +4,432 B flash**, and the legend **+136 B / +1,292 B**.
+
+All of them are zero-warning from `src/` under `-Wall -Wextra`. (The first two predate
+`companion.cpp`, hence six `note_names` warnings rather than seven — see §4.0.)
 
 The build is **not** bit-for-bit reproducible (the ELF carries a build timestamp), so
 a rebuild will not match `SHA256SUMS.txt`. Those hashes check a download, not a
@@ -664,6 +702,23 @@ Everything under "verified" was read from the raw upstream source — for v2, fr
 | **`mono_scroll_mode_t`** (v2) | `MONO_SCROLL_MODE_ONCE 0`, `_LOOP 1`, `_BOUNCE 2` | `ChainMono.hpp:79` |
 | Mono buffer bit order | `Display_buffer[N]` = row N, **bit7 → bit0 = X 0 → 7**, 1 = on | `protocol/Chain_Mono_Protocol.md` |
 
+### Verified — `M5Unified` **0.2.22** / `M5GFX` (the companion firmware, §9)
+
+Read from the installed copies under
+`firmware/companion-atoms3r/.pio/libdeps/companion_atoms3r/`.
+
+| Name | Signature / value | Source file |
+|---|---|---|
+| `Button_Class::wasClicked` | `bool wasClicked(void) const` — true for one pass after a brief press **and release** | `M5Unified/src/utility/Button_Class.hpp` |
+| `Button_Class::wasHold` | `bool wasHold(void) const` — a one-shot fired when the press crosses the threshold, so a hold never also reports a click | same |
+| `Button_Class::setHoldThresh` | `void setHoldThresh(std::uint32_t msec)` — default `_msecHold` is **500**; the companion sets 800 | same |
+| `M5Unified::getBoard` | `board_t getBoard(void)`. There is **no** `getBoardName()` — the companion maps the enum to a string itself | `M5Unified.hpp` |
+| `board_t` AtomS3R family | `board_M5AtomS3R = 18`, `board_M5AtomS3RExt = 143`, `board_M5AtomS3RCam = 144` | `M5GFX/src/lgfx/boards.hpp` |
+| AtomS3R display autodetect | Probed at run time on **G21 MOSI / G15 SCK / G42 DC / G14 CS / G48 RST**, 3-wire SPI. **Both panel ICs are handled**: `Panel_ST7735S` (ids `0x7683`/`0x897C`) and `Panel_GC9107` (id `0x079100`), 128×128 either way, with a slow re-probe for GC9107 batches that only answer at 100 kHz | `M5GFX/src/M5GFX.cpp` (the `EFUSE_PKG_VERSION_ESP32S3PICO` branch) |
+| Display pins vs the link | None of the LCD pins above is G5 or G6, so the companion's UART cannot collide with its own screen | same |
+| `M5Canvas` | `M5Canvas c(&M5.Display); c.setColorDepth(16); c.createSprite(w,h); c.pushSprite(x,y)` — the whole frame is composed off-screen and blitted once | `M5GFX/src/M5GFX.h` → `LGFX_Sprite` |
+| `board_build.arduino.memory_type` | Selects which prebuilt static libs are linked, **not** the bootloader: the Atom build pulls `esp32s3/qio_opi/libesp_psram.a`, the DualKey `esp32s3/qio_qspi/`, and both get the same `bootloader_qio_80m` from `esp32s3/bin/`. Confirmed in each project's `firmware.map` | `framework-arduinoespressif32-libs` |
+
 ### Verified — board pins (M5Stack's Chain DualKey documentation)
 
 Key1 = G0, Key2 = G17, WS2812 data = G21, WS2812 power-enable = G40 (must be HIGH),
@@ -696,6 +751,16 @@ mode, #7 whether `setMonoBufferRefresh` exists) are resolved.
 | 11 | **(v2)** Whether the chained nodes' own click-feedback pulses (the STM32 firmware additively pulses green/blue/red on single/double/long press) visibly fight the colours we write | The firmware does not try to fight it; `set node_leds false` (v2.1) or `FLOW_NODE_LEDS 0` turns our writes off. |
 | 12 | **(v2.1)** Whether `mono_idle: "letter"` leaving a glyph lit indefinitely is noticeable on battery life, and whether the panel has any burn-in behaviour | Untested. `set mono_idle "blank"` restores v2.0's blank idle; `mono_brightness` also lowers it. |
 | 13 | **(v2.1)** NVS wear | `save` is the only writer and is host-driven, so the firmware itself never writes. An app that saves on every slider drag would be the problem; nothing in the firmware rate-limits it. |
+| 14 | **(0.2.0) The companion link in its entirety.** No AtomS3R has been attached to a DualKey. Both firmwares compile clean; nothing has been observed working | The link is inert when nothing answers: a beacon every 1.5 s into a port that may not be connected, and no effect on anything else. `FLOW_COMPANION 0` removes it. |
+| 14b | **(0.2.0)** Which pin pair is actually free. The bus probe settled on `G47/G48` in the one hardware observation on record, which should leave `G5/G6` for the companion — but that was one cable on one board | The companion asks `chainBusPins()` at boot instead of assuming, so it follows whatever the probe decided. |
+| 14c | **(0.2.0)** Whether a second `HardwareSerial` on the DualKey's spare port works at all — e.g. whether that port's pins are shared with anything, or its 5 V rail gated | Untested. The DualKey's own `?` dump prints the link state and the pins in use, which is the first thing to look at. |
+| 14d | **(0.2.0)** The hand-off if the Chain bus re-probes onto the companion's pins. `chainService()` rotates through all four candidates when the bus goes quiet, and two of them are the pair the companion holds | `companionTick()` compares the chain's current pins against its own every pass and moves to the other port if they collide. Coded, never exercised. |
+| 14e | **(0.2.0)** Screen legibility — font sizes, the drawn glyphs and 60 % brightness were chosen on a 128×128 grid on paper, not on a 0.85″ panel | All of it is in `uiDraw()` and its helpers in the companion's `main.cpp`; nothing persists, so a change is a reflash and nothing else. |
+| 14f | **(0.2.0)** Which AtomS3R panel IC is on the unit in hand. M5Stack changed it from GC9107 to ST7735 in May 2026 | M5GFX autodetects and supports both (§6, verified). Nothing in this firmware names a panel. |
+| 14g | **(0.3.0)** Whether the 16-pixel font actually fits a 16-character legend row on the real panel. If it does not, all three rows drop to the 8-pixel console font **together** — so one character over budget on one layer changes the look of every row on it | Measured with `textWidth()` at draw time, not assumed, so it cannot overflow the panel; it can only be smaller than intended. The fix if it reads badly is to shorten the labels in `layerLegend()` (one file, one place), not to change the font. |
+| 14h | **(0.3.0)** Whether ~30 fps of full 128×128×2 sprite blits over SPI is comfortable. The mic pulse is the busiest frame | Arithmetic says yes; unmeasured. `UI_FRAME_MS` in `companion_proto.h` is the single knob, and raising it degrades smoothness rather than correctness — every animation derives its phase from the bucket. |
+| 14i | **(0.3.0)** Whether the animation *durations* (700 ms mic pulse, 250 ms layer wipe, 150 ms tap flash, 800 ms knob bar) read as deliberate rather than twitchy | All four are `#define`s at the top of `companion_proto.h`. Nothing else depends on their values; `UI_REC_FRAMES` and `UI_WIPE_FRAMES` are derived so a duration cannot desynchronise from its own animation. |
+| 14j | **(0.3.0)** Whether a tap's 150 ms row flash is even perceptible next to the existing LED flash and Mono overlay, or whether three simultaneous feedbacks are one too many | Cosmetic either way. Removing it is deleting the `tap_row` branch in `drawLegend()`; the `tap` event itself is also what the icons need. |
 
 ---
 
@@ -706,7 +771,7 @@ Plug in with the side switch in the **middle** position, *not* holding Key1.
 **1. Serial** (`pio device monitor`). Expect within a second of boot:
 
 ```
-[flow-sidecar] v0.1.0 boot - 1 layers, proto 1, '?' for status
+[flow-sidecar] v0.1.0 boot - 4 layers, proto 1, '?' for status
 {"ev":"boot","fw":"0.1.0"}
 [chain] id=1 type=0x0003        <- Chain Key
 [chain] id=2 type=0x0004        <- Chain Joystick
@@ -737,7 +802,7 @@ type commands by hand). Each of these must produce exactly one reply line:
 
 ```
 {"cmd":"hello","id":1}          -> {"ev":"hello","id":1,"fw":"0.1.0","proto":1,
-                                    "layers":["FLOW"],...}
+                                    "layers":["FLOW","MEDIA","EDIT","MOUSE"],...}
 {"cmd":"status"}                -> {"ev":"status","layer":0,"vbat_mv":...,"usb_mv":...}
 {"cmd":"get_config"}            -> {"ev":"config",...}          (~700 bytes, one line)
 {"cmd":"identify"}              -> {"ev":"ok"}   + both key LEDs flash white x3, Mono "ID"
@@ -747,7 +812,8 @@ type commands by hand). Each of these must produce exactly one reply line:
 {"cmd":"state","value":"error"}        -> {"ev":"ok"} + Mono cross 900 ms, two red flashes
 {"cmd":"state","value":"idle"}         -> {"ev":"ok"} + back to normal
 {"cmd":"state","value":"busy"}         -> {"ev":"err","msg":"unknown state"}
-{"cmd":"layer","index":1}       -> {"ev":"err","msg":"bad layer index"}   (one layer built)
+{"cmd":"layer","index":1}       -> {"ev":"ok"} + a `layer` event  (MEDIA; `err` with
+                                    `FLOW_EXTRA_LAYERS 0`, where only index 0 exists)
 {"cmd":"set","path":"led_idle_pct","value":60}   -> {"ev":"ok","path":"led_idle_pct"}
 {"cmd":"set","path":"led_idle_pct","value":600}  -> {"ev":"err","msg":"expected 0..100"}
 {"cmd":"set","path":"nope","value":1}            -> {"ev":"err","msg":"unknown path"}
@@ -776,7 +842,7 @@ the first-byte-of-the-line rule doing its job.
 | Kill the ASR server and hold Key1 | Mono **✗** for 900 ms, two red flashes. |
 | Tap the Chain Key once, then wait | ~350 ms later: both DualKey LEDs flash, host re-pastes (F7). The delay is intentional — §5. |
 | Tap the Chain Key **twice** quickly | Ctrl+Z instead of a second paste. |
-| **Hold the Chain Key ≥ 1 s** | With one layer built: **nothing at all** — no node-LED colour change, no DualKey flash, no panel scroll. On release the normal tap (or double-tap) fires. |
+| **Hold the Chain Key ≥ 1 s** | Cycles FLOW → MEDIA → EDIT → MOUSE: the node LED turns the next layer's colour after ~200 ms, both DualKey LEDs flash it ×2 at 1 s, and the panel scrolls the name then shows its letter. Rebuilt with `FLOW_EXTRA_LAYERS 0` the hold does **nothing at all** and the normal tap (or double-tap) fires on release. |
 | Nav stick | Caret moves; Mono shows an **arrow** in that direction while held; hold → one move, ~300 ms pause, then ~20 moves/s. |
 | Nav stick click | Newline (Enter). |
 | Scroll stick fore/aft | Page scrolls, faster further from centre; Mono runs the **two-bar scroll animation**. |
@@ -856,4 +922,266 @@ the one-transaction-per-loop scheduler.
 19. **(0.1.0) The 60-second host window is a heuristic.** Quitting the app does not
     tell the device anything, so for up to a minute afterwards a key release still
     shows no checkmark. It costs one missing glyph on one dictation.
-20. **(0.1.0) One layer.** `FLOW_EXTRA_LAYERS 0`. See the header of this file.
+20. ~~**(0.1.0) One layer.**~~ **No longer true of the shipped image**: the key-legend
+    rebuild sets `FLOW_EXTRA_LAYERS 1` and `bin/fethr-sidecar-0.1.0/` builds all four.
+    The flag still exists and still works; MEDIA/EDIT/MOUSE remain the least-exercised
+    part of this firmware.
+21. **(0.2.0) The companion link has no reply channel.** Commands from the companion
+    get no `ok`/`err`; a rejected one is silently dropped. It is a display, not a
+    settings client, and its only real feedback is the `layer` event a successful
+    change produces anyway.
+22. **(0.2.0) The companion is not a Chain node** and never will be. It cannot appear
+    in `nodes`, it holds no bus id, and `chainNodeCount()` does not count it. The
+    `status` reply gives it its own `companion` object for exactly this reason.
+23. **(0.2.0) One companion.** The link is a point-to-point UART on one port pair;
+    there is no addressing and no second screen.
+24. **(0.3.0) The legend describes three keys and two analogue controls, not the
+    Chain Key's double-tap.** Four slots is what fits a 128×128 panel; the double-tap
+    action (`chain_key_double`) has no row, and neither does the scroll stick's
+    direction behaviour. The `tap` event still reports `"chain2"` when a double fires,
+    so it flashes the Chain Key's row.
+25. **(0.3.0) Tap icons are matched on the label text**, not on an identifier — the
+    identifier cannot distinguish the MEDIA bindings (§9a). Renaming a label in
+    `actionLabel()` silently loses its icon; the row still flashes. Deliberate: the
+    alternative is a second enumeration to keep in step with the first.
+26. **(0.3.0) The knob bar shows knob POSITION, not host volume.** Same caveat as
+    limitation 5 for the Mono panel's volume bar, and for the same reason: the first
+    ADC reading after boot is adopted silently, so only movement is meaningful.
+27. **(0.3.0) The legend is the current layer's only.** There is no per-layer cache on
+    the companion, because a `layer` event always carries the new legend; a cache would
+    buy nothing but a way to be out of date.
+
+---
+
+## 9. The companion display (0.2.0)
+
+An optional AtomS3R on the DualKey's spare Chain port. **The user-facing document is
+[`../../COMPANION.md`](../../COMPANION.md) and the wire contract is in
+[`../../PROTOCOL.md`](../../PROTOCOL.md) § *Companion link*** — this section is only
+what a reader of the firmware needs that those do not say.
+
+### Two probes stacked
+
+The companion is not a Chain node; it is a second controller on a plain UART. Two
+things are unknown at boot and both are resolved at run time rather than configured:
+
+1. **Which port.** `chainBegin()`'s auto-probe decides which pin pair carries the
+   Chain bus. `companionBegin()` runs **after** it, calls the new `chainBusPins()`,
+   and takes the complement. Ordering matters: called before `chainBegin()` it would
+   read a pin pair the chain had not committed to yet.
+2. **Which way round.** Both ends are controllers on a straight-through cable, so
+   there is no host/device convention for TX and RX. The **DualKey** alternates its
+   two candidate orders on every unanswered beacon (`COMPANION_PROBE_MS`, 1.5 s); the
+   Atom's side is fixed at RX=G5/TX=G6 through the ToChain Base. Either end's hello
+   resolves it, so in practice it locks within about three seconds of both being
+   powered.
+
+`CHAIN_UART` is `Serial2` and `COMPANION_UART` is `Serial1` — different peripherals,
+so the two links never contend for hardware, only potentially for pins.
+
+### The collision case
+
+`chainService()` rotates through **all four** pin candidates when the bus goes quiet,
+and two of them are the pair the companion is holding. `companionTick()` therefore
+re-reads `chainBusPins()` every pass and, if the chain has landed on its pins, moves to
+the other port and restarts probing. Two integer compares per loop; the alternative is
+two UARTs driving one wire.
+
+### Scheduler rules
+
+Identical to `serial_proto.cpp`, and for the same reasons: never blocks, no `delay()`,
+**at most one inbound line parsed per `loop()`** (`readLines()` returns the moment it
+has handled one), and every outbound line built with `snprintf` into one static buffer.
+Only `deserializeJson()` allocates, and only while a companion command is in hand.
+
+Events are emitted from the single place each fact changes, so neither listener can
+drift from the other:
+
+| Event | Emitted from |
+|---|---|
+| `layer` | `enterLayer()` — the one place a layer changes, whatever asked for it |
+| `state` | `hostStateSet()`, **after** its unchanged-state early return, so it fires on a change |
+| `hold` | `scanLocalKeys()`, beside the existing `protoEventHold()` |
+| `chain` | `chainEnumerate()`, beside `protoEventChain()` |
+| `battery` | `companionTick()`'s own 30 s timer |
+| `tap`, `knob` | 0.3.0 — see §9a for both, and for why `tap` carries a label rather than an `FnId` |
+
+All of them are no-ops while the link is down, so no call site has to check.
+
+### `FLOW_COMPANION 0`
+
+Compiles the module out: the `#else` arm of `companion.cpp` defines every entry point
+as an empty stub, so no call site changes and no state exists. Same pattern
+`serial_proto.cpp` uses for `FLOW_SERIAL_PROTO`. The `status` reply keeps its
+`companion` field and reports `linked: false` — a host should not have to tell "no
+companion" from "no field".
+
+### Building the Atom side
+
+A **separate** PlatformIO project, `firmware/companion-atoms3r/`. It is not synced into
+the Arduino sketch folder: different board, different libraries, and it would not
+compile beside the DualKey sources.
+
+```
+pio run -d hardware/firmware/companion-atoms3r
+pio run -d hardware/firmware/companion-atoms3r -t upload
+```
+
+Three choices in its `platformio.ini` are worth knowing:
+
+* **`board = esp32-s3-devkitc-1`, not `m5stack-atoms3`.** pioarduino does ship
+  `boards/m5stack-atoms3.json`, but that is the AtomS3 — ESP32-S3FN8, **no PSRAM** —
+  and it also defines `-DARDUINO_M5Stack_ATOMS3`, a claim about the hardware that is
+  false here. M5Stack's own PlatformIO snippet for the AtomS3R uses the generic devkit
+  profile with the memory type corrected, which is also what the DualKey project does.
+  M5Unified identifies the board at run time regardless (§6).
+* **`board_build.arduino.memory_type = qio_opi`** — quad flash + **octal** PSRAM, the
+  physical wiring of the ESP32-S3-PICO-1-N8R8. Paired with `-DBOARD_HAS_PSRAM`. This
+  selects which prebuilt libs are linked, verified in the map file (§6). M5Stack's
+  snippet also passes `-mfix-esp32-psram-cache-issue`; that is an ESP32-classic silicon
+  workaround and is deliberately not carried over.
+* **`ARDUINO_USB_MODE=1` is left as the board json sets it** — the opposite of the
+  DualKey, which has to `build_unflags` it. The companion sends no HID, so there is
+  nothing TinyUSB buys, and the hardware USB-Serial-JTAG peripheral survives a crashed
+  application better because nothing in the sketch drives it.
+
+`core_dir = C:/pio` is shared with the DualKey project on purpose: one toolchain
+download, one set of resolved versions across both firmwares.
+
+### Companion build record
+
+With the key legend and the animations (§9a):
+
+```
+RAM:   [=         ]   8.8% (used 28916 bytes from 327680 bytes)
+Flash: [==        ]  17.5% (used 584791 bytes from 3342336 bytes)
+```
+
+against `28,652 B / 576,423 B` for the first companion build — **+264 B RAM,
++8,368 B flash**, most of it the GFX font and the `sinf` path the mic pulse pulls in.
+
+Zero warnings, `src/` under `-Wall -Wextra`, and — unlike the DualKey build — zero
+warnings from the libraries either. The 32 KB display sprite is allocated at run time
+and is not in the RAM figure. Images: `bin/fethr-companion-atoms3r-0.1.0/`
+(`firmware.factory.bin` at `0x0`, emitted by pioarduino itself; no esptool merge step
+is needed).
+
+`COMPANION_FW_VERSION` stays `"0.1.0"` on purpose — same rule as
+`FLOW_SIDECAR_VERSION`: the number moves when an image is cut for a release, not when a
+feature lands, and `bin/` has only ever carried one companion release. The two images
+in `bin/` were rebuilt together and must be flashed together; an older DualKey sends no
+`legend` and the screen would sit on "no legend yet".
+
+| Component | Version |
+|---|---|
+| platform `espressif32` (pioarduino) | 55.3.311 |
+| arduino-esp32 core | 3.3.11 |
+| `M5Unified` (pulls `M5GFX`) | 0.2.22 |
+| `ArduinoJson` | 7.4.3 |
+
+---
+
+## 9a. The key legend and the companion's animations (0.3.0)
+
+**The user-facing document is [`../../COMPANION.md`](../../COMPANION.md) and the wire
+contract is [`../../PROTOCOL.md`](../../PROTOCOL.md) § *Companion link*.** This section
+is what a reader of the firmware needs that those do not say.
+
+### One source of truth, on the DualKey side
+
+The companion's resting screen is a per-layer key legend, and every string on it is
+built in **`layerLegend()` in `layers.cpp`** — beside `fnColor()` and `fnGlyph()`, from
+the same `LAYERS[]` rows the keys actually fire from — and shipped as a `legend` array
+on `hello` and on every `layer` event.
+
+The companion holds **no** table of bindings. That is the entire point: a screen that
+kept its own copy would be one edit away from confidently lying about what a key does,
+which is worse than having no screen. Change `layers.cpp` and the legend changes,
+because there is nothing else for the panel to draw.
+
+`actionLabel()` is keyed on the **action**, not on its `FnId`. It has to be: every
+control on the MEDIA layer carries `FN_MEDIA`, so the id cannot tell "play/pause" from
+"mute". Consumer usages and mouse buttons are matched on `code`; everything else falls
+back to a per-`FnId` label, which is exactly right for the keyboard actions because
+those are the ones the `FnId` already names.
+
+Three character budgets are in play and they are not the same number:
+
+* `COMPANION_LEGEND_MAX` is **20** — what the companion's 6-pixel console font fits
+  across 128 px with a margin, and what `"stick cursor / wheel"` needs.
+* the three key rows are *built* to fit **16**, so the companion can use the 16-pixel
+  font when they are short. `"K1 hold: dictate"` and `"K3: middle click"` are the two
+  that sit exactly on it. The gesture is spelled out only for a hold, because a tap is
+  the default and saying so costs four characters the budget does not have.
+* `COMPANION_OUT_BYTES` went **256 → 384**. A four-layer `hello` with the legend lands
+  near 175 bytes, so this is headroom rather than a fit. A truncated line is dropped
+  rather than sent malformed (`evEnd()`), so overflowing would cost the beacon
+  entirely — worth the 128 bytes.
+
+### `tap` and `knob`
+
+Both are emitted from the same places the host's own events are, so the two listeners
+cannot be told different stories:
+
+| Event | Emitted from |
+|---|---|
+| `tap` | `scanLocalKeys()` (Key1/Key2), `chainKeyFire()` (chain, chain2), `pollNavStick()` / `pollScrollStick()` (the stick clicks) — each beside its `protoEventTap()` |
+| `knob` | `angleUpdate()`, on both the active and the `ANGLE_OFF` path |
+
+`tap` carries `actionLabel()`'s prose in `fn`, **not** the `FN_*` identifier, for the
+same reason `actionLabel()` exists — see PROTOCOL.md.
+
+`knob` is rate-limited to 10/s by **coalescing, not dropping**: `companionEventKnob()`
+only records the newest detent and `companionTick()` sends it when
+`COMPANION_KNOB_MIN_GAP_MS` has elapsed. The interesting value is where the knob
+*stopped*, which is by definition the last one, so dropping would be exactly wrong. A
+pending detent is discarded when the link drops — it would otherwise arrive ahead of
+the `hello` that says which layer it belongs to.
+
+The `ANGLE_OFF` path emits too. A knob that turns and shows nothing reads as a broken
+screen rather than as an unbound control; it also means the bar behaves the same on
+every layer, which is one less thing for a user to learn.
+
+### Redraw discipline on the Atom, with animations in it
+
+The v0.1.0 rule was "draw only when the `Frame` struct changes", and animation could
+have broken it — a sine evaluated against `millis()` changes on every pass. It does not,
+because **every animation is quantised into `UI_FRAME_MS` (33 ms) buckets inside
+`uiDesired()`**, before the value reaches the struct. The bucket index is the struct's
+`arg`, so the comparison still decides redraws, ~30 fps falls out as a ceiling with no
+timer anywhere, and a resting companion still costs zero blits.
+
+The consequence worth remembering when editing: **`uiDraw()` must stay a pure function
+of `Frame`.** It never calls `millis()`. Reading the clock inside a draw would make the
+equality test unsound and the redraw rate unbounded, which is the bug this structure
+exists to prevent.
+
+The recording pulse is anchored to `millis()` itself rather than to the key press. A
+press anchor would restart the sine on every `hold` event — including the one the
+*other* key emits — so the glyph would visibly jump mid-dictation.
+
+### Where the checkmark went, from the other end of the link
+
+The DualKey suppresses its own release-time ✓ when a host is attached (§4a). The
+companion needs the same rule and cannot see `hostPresent()`, so it derives it: a
+`state` event has only ever been forwarded because something pushed one, so **one
+`state` event is proof that an app is attached**. With that, a key release starts a
+wait — spinner and "working…" — that ends on `pasted`, `error` or an explicit `idle`.
+Without it, the release gets its checkmark immediately, which is the plain-USB-keyboard
+case.
+
+The wait has **no timeout**, deliberately, and for the same reason limitation #18
+gives: a cleanup pass can legitimately take several seconds, and guessing wrong is
+worse than showing the work. It ends on a report or on the link dropping, never on a
+clock.
+
+### Fonts
+
+The three legend rows use **one** font, chosen by the widest of them: the 16-pixel
+`Font2` if all three fit the panel, otherwise the 8-pixel `Font0` for all three. Picking
+per row would be easy and would look like a bug — three lines of the same kind of
+information should not be three sizes. The footer is always `Font0`; it is longer, and
+it is reference rather than the headline.
+
+Nothing on the wire is non-ASCII. The bundled GFX fonts have no glyphs beyond ASCII, so
+the labels use `/` and `:` where a typographic middle dot would have read better.

@@ -271,6 +271,7 @@ static void chainEnumerate(uint32_t now)
   g_chain_ready      = true;
 
   protoEventChain();
+  companionEventChain();
 }
 
 /* ================================================================== */
@@ -469,7 +470,14 @@ static void angleUpdate(uint16_t adc, uint32_t now)
   }
 
   if (LAYERS[g_layer].angle_mode == ANGLE_OFF) {
-    g_angle_detent = detentHysteresis(adc);
+    /* The knob still MOVED, and the companion draws its position bar whatever
+     * the layer does with it - a knob that turns and shows nothing reads as a
+     * broken screen rather than as an unbound control. */
+    int16_t idle_d = detentHysteresis(adc);
+    if (idle_d != g_angle_detent) {
+      g_angle_detent = idle_d;
+      companionEventKnob((uint8_t)g_angle_detent);
+    }
     return;
   }
 
@@ -478,6 +486,7 @@ static void angleUpdate(uint16_t adc, uint32_t now)
 
   int16_t delta  = (int16_t)(d - g_angle_detent);
   g_angle_detent = d;
+  companionEventKnob((uint8_t)g_angle_detent);
 
   if (LAYERS[g_layer].angle_mode == ANGLE_VOLUME) {
     /* 0..8 filled columns, so a knob at the very bottom still shows an (empty)
@@ -528,6 +537,7 @@ static void chainKeyFire(const Action &a, uint32_t now, const char *tap_name)
   ledFlashKey(1, now);
   g_ck_flash_until = now + NODE_LED_TAP_MS;
   protoEventTap(tap_name);
+  companionEventTap(tap_name, actionLabel(a));
   FLOG("[chainkey] fire type=%u code=0x%02X\r\n", (unsigned)a.type, (unsigned)a.code);
 }
 
@@ -628,6 +638,7 @@ static bool pollNavStick(uint32_t now)
     if (down && !g_nav_btn_down) {
       actionFire(LAYERS[g_layer].nav_click, now);
       protoEventTap("nav");
+      companionEventTap("nav", actionLabel(LAYERS[g_layer].nav_click));
     }
     g_nav_btn_down = down;
   }
@@ -655,6 +666,7 @@ static bool pollScrollStick(uint32_t now)
     if (down && !g_scroll_btn_down) {
       actionFire(LAYERS[g_layer].scroll_click, now);
       protoEventTap("scroll");
+      companionEventTap("scroll", actionLabel(LAYERS[g_layer].scroll_click));
     }
     g_scroll_btn_down = down;
   }
@@ -719,7 +731,22 @@ static void nodeLedsCompute(uint32_t now)
    *      full-brightness flash on tap ---- */
   if (g_key_id != 0) {
     uint8_t rgb[3];
-    if (LAYER_COUNT > 1 && g_ck_down && !g_ck_consumed &&
+    bool    any_hold = g_key[0].hold_active || g_key[1].hold_active;
+    uint8_t hs       = hostState();
+    if (any_hold) {
+      /* Mirror the DualKey keys: solid red while a dictation hold is active,
+       * so the third key reads as "recording" too. */
+      rgb[0] = g_cfg.hold_rgb[0];
+      rgb[1] = g_cfg.hold_rgb[1];
+      rgb[2] = g_cfg.hold_rgb[2];
+    } else if (hs == HOST_TRANSCRIBING || hs == HOST_CLEANING) {
+      rgb[0] = 255; rgb[1] = 150; rgb[2] = 0; /* amber: server working */
+    } else if (hs == HOST_PASTED && (now - hostStateSince()) < 600) {
+      rgb[0] = 0; rgb[1] = 255; rgb[2] = 60;  /* green: text landed */
+    } else if (hs == HOST_ERROR && (now - hostStateSince()) < 900) {
+      rgb[0] = ((now - hostStateSince()) / 150) & 1 ? 255 : 40; /* red blink */
+      rgb[1] = 0; rgb[2] = 0;
+    } else if (LAYER_COUNT > 1 && g_ck_down && !g_ck_consumed &&
         (now - g_ck_press_ms) >= NODE_LED_COUNT_AFTER_MS) {
       /* "keep holding" - show where the hold is going. Suppressed on a
        * single-layer build, where the hold goes nowhere. */
@@ -729,7 +756,7 @@ static void nodeLedsCompute(uint32_t now)
       fnColor(LAYERS[g_layer].chain_key.fn, g_layer, rgb);
     } else {
       fnColor(LAYERS[g_layer].chain_key.fn, g_layer, rgb);
-      for (uint8_t i = 0; i < 3; i++) rgb[i] = scalePct(rgb[i], 55);
+      for (uint8_t i = 0; i < 3; i++) rgb[i] = scalePct(rgb[i], 80);
       tintForBattery(rgb);
     }
     for (uint8_t i = 0; i < 3; i++) g_nl[NL_KEY].want[i] = rgb[i];
@@ -806,28 +833,98 @@ static bool nodeLedsService(uint32_t now)
 /* Public API                                                          */
 /* ================================================================== */
 
+/* ------------------------------------------------------------------ */
+/* Bus auto-probe                                                       */
+/* ------------------------------------------------------------------ */
+
+/* The DualKey has two Chain ports and the vendor docs disagree about which
+ * GPIO pair is which (and about TX/RX order on one of them). Rather than
+ * make the user care, try every candidate pin pair until a node answers.
+ * The winner is remembered; if the chain later goes quiet, the periodic
+ * re-enumeration rotates through the candidates again, so plugging into
+ * the other port at runtime also works. */
+struct BusPins {
+  int8_t rx, tx;
+  const char *name;
+};
+
+/* Order = most likely first. Verified on hardware 2026-09-14: a chain on the
+ * port next to the lanyard hole answered on G47 rx / G48 tx. */
+static const BusPins BUS_CANDIDATES[] = {
+    {CHAIN_LEFT_RX_PIN, CHAIN_LEFT_TX_PIN, "port1 (G47 rx / G48 tx)"},
+    {CHAIN_RX_PIN, CHAIN_TX_PIN, "port2 (G5 rx / G6 tx)"},
+    {CHAIN_LEFT_TX_PIN, CHAIN_LEFT_RX_PIN, "port1 swapped (G48 rx / G47 tx)"},
+    {CHAIN_TX_PIN, CHAIN_RX_PIN, "port2 swapped (G6 rx / G5 tx)"},
+};
+static const uint8_t BUS_CANDIDATE_COUNT = sizeof(BUS_CANDIDATES) / sizeof(BUS_CANDIDATES[0]);
+static uint8_t       g_bus_index         = 0;
+static uint32_t      g_hotplug_check_at  = 0;
+
+static void busSelect(uint8_t index)
+{
+  g_bus_index = (uint8_t)(index % BUS_CANDIDATE_COUNT);
+  const BusPins &b = BUS_CANDIDATES[g_bus_index];
+  CHAIN_UART.end();
+  M5Chain.begin(&CHAIN_UART, CHAIN_BAUD, b.rx, b.tx);
+  FLOG("[chain] bus -> %s\r\n", b.name);
+}
+
+const char *chainBusName(void)
+{
+  return BUS_CANDIDATES[g_bus_index].name;
+}
+
+void chainBusPins(int8_t *rx, int8_t *tx)
+{
+  const BusPins &b = BUS_CANDIDATES[g_bus_index];
+  if (rx) *rx = b.rx;
+  if (tx) *tx = b.tx;
+}
+
 void chainBegin(uint32_t now)
 {
-  M5Chain.begin(&CHAIN_UART, CHAIN_BAUD, CHAIN_RX_PIN, CHAIN_TX_PIN);
-  chainEnumerate(now);
+  for (uint8_t i = 0; i < BUS_CANDIDATE_COUNT; i++) {
+    busSelect(i);
+    delay(30); /* let the UART settle; setup() only, never in loop() */
+    chainEnumerate(now);
+    if (g_chain_ready) return;
+  }
+  /* Nothing answered on any pair: settle on the first and keep retrying
+   * from chainService(), rotating pairs on every failed attempt. */
+  busSelect(0);
 }
 
 void chainService(uint32_t now)
 {
   if (!g_chain_ready) {
-    if ((int32_t)(now - g_reenum_at) >= 0) chainEnumerate(now);
+    if ((int32_t)(now - g_reenum_at) >= 0) {
+      chainEnumerate(now);
+      if (!g_chain_ready) busSelect((uint8_t)(g_bus_index + 1));
+    }
     return;
   }
 
   /* A node at the end of the chain pushes an "enumeration request" when the
    * topology changes; the library counts those for us. */
+  /* On real hardware the last node repeats its "enumerate please" packet
+   * roughly every 700 ms even when nothing changed, so the counter alone
+   * cannot be trusted. Rate-limit the check and only re-enumerate when the
+   * node COUNT actually differs from what we have. */
   uint16_t ep = M5Chain.getEnumPleaseNum();
   if (ep != g_enum_please_seen) {
-    FLOG("[chain] hot-plug detected\r\n");
     g_enum_please_seen = ep;
-    g_chain_ready      = false;
-    g_reenum_at        = now;
-    return;
+    if ((int32_t)(now - g_hotplug_check_at) >= 0) {
+      g_hotplug_check_at = now + CHAIN_HOTPLUG_CHECK_MS;
+      uint16_t count = 0;
+      chain_status_t st = M5Chain.getDeviceNum(&count, CHAIN_CALL_TIMEOUT_MS);
+      if (st == CHAIN_OK && count != g_dev_list.count) {
+        FLOG("[chain] hot-plug: %u -> %u device(s)\r\n", (unsigned)g_dev_list.count,
+             (unsigned)count);
+        g_chain_ready = false;
+        g_reenum_at   = now;
+      }
+      return; /* this loop's bus transaction was the count check */
+    }
   }
 
   /* The panel matters more than one extra input sample, and it only writes on
@@ -887,8 +984,8 @@ void chainPrintStatus(void)
   Serial.printf("\r\n--- flow-sidecar " FLOW_SIDECAR_VERSION " ---\r\n");
   Serial.printf("layer   : %u/%u %s\r\n", (unsigned)g_layer, (unsigned)LAYER_COUNT,
                 LAYERS[g_layer].name);
-  Serial.printf("chain   : %s, %u device(s)\r\n", g_chain_ready ? "ready" : "DOWN",
-                (unsigned)g_dev_list.count);
+  Serial.printf("chain   : %s, %u device(s), bus %s\r\n", g_chain_ready ? "ready" : "DOWN",
+                (unsigned)g_dev_list.count, chainBusName());
   for (uint16_t i = 0; i < g_dev_list.count; i++) {
     Serial.printf("  id=%u type=0x%04X\r\n", (unsigned)g_dev_list.devices[i].id,
                   (unsigned)g_dev_list.devices[i].device_type);
@@ -912,4 +1009,7 @@ void chainPrintStatus(void)
                 settingsLoadedFromNvs() ? "from NVS" : "defaults",
                 (unsigned)FLOW_SIDECAR_PROTO,
                 (g_cfg.mono_idle == MONO_IDLE_LETTER) ? "letter" : "blank");
+#if FLOW_COMPANION
+  companionPrintStatus();
+#endif
 }

@@ -24,6 +24,7 @@
 
 #include "settings.h"
 
+#include <stdio.h>
 #include <string.h>
 
 const LayerConfig LAYERS[] = {
@@ -205,5 +206,155 @@ uint8_t fnGlyph(uint8_t fn)
     case FN_MOUSE_R:
     case FN_MOUSE_M:    return G_POINTER;
     default:            return G_HOLD;
+  }
+}
+
+/* ================================================================== */
+/* Function -> human label, and the companion's key legend (0.3.0)     */
+/* ================================================================== */
+
+/*
+ * The companion display's idle screen is a legend for the current layer, and
+ * these strings are the whole of it: they are built here, from the same table
+ * the keys actually fire from, and shipped over the link. The screen therefore
+ * cannot drift from the bindings - there is no second copy to forget.
+ *
+ * They are NOT wire-format identifiers. `fn_rgb` keys and the `fn` field of a
+ * host `hold` event are still FN_NAME above; these are prose for a human
+ * reading a 128x128 panel, and renaming one breaks nothing but the label.
+ */
+
+/* Index order MUST match enum FnId. FN_NONE's entry is the placeholder an
+ * unmapped control shows, so unlike FN_NAME it is not NULL. */
+static const char *const FN_LABEL[FN_COUNT] = {
+    "-",            /* FN_NONE       */
+    "dictate",      /* FN_DICT_RAW   */
+    "clean",        /* FN_DICT_CLEAN */
+    "repaste",      /* FN_REPASTE    */
+    "media",        /* FN_MEDIA      */
+    "undo",         /* FN_UNDO       */
+    "redo",         /* FN_REDO       */
+    "left click",   /* FN_MOUSE_L    */
+    "right click",  /* FN_MOUSE_R    */
+    "middle click", /* FN_MOUSE_M    */
+    "enter",        /* FN_ENTER      */
+};
+
+/*
+ * Keyed on the ACTION, not on its FnId, because one FnId can cover several
+ * different bindings: every control on the MEDIA layer carries FN_MEDIA, and
+ * "play/pause" and "mute" are not the same legend. The FnId is only the
+ * fallback, which is exactly right for the keyboard actions - those are the
+ * ones whose meaning the FnId already names.
+ */
+const char *actionLabel(const Action &a)
+{
+  switch (a.type) {
+    case ACT_NONE:
+      return "-";
+
+    case ACT_CONSUMER_TAP:
+      switch (a.code) {
+        case CONSUMER_CONTROL_PLAY_PAUSE:       return "play/pause";
+        case CONSUMER_CONTROL_SCAN_NEXT:        return "next track";
+        case CONSUMER_CONTROL_SCAN_PREVIOUS:    return "prev track";
+        case CONSUMER_CONTROL_MUTE:             return "mute";
+        case CONSUMER_CONTROL_VOLUME_INCREMENT: return "vol up";
+        case CONSUMER_CONTROL_VOLUME_DECREMENT: return "vol down";
+        default:                                break;
+      }
+      break;
+
+    case ACT_MOUSE_HOLD:
+      return "drag";
+
+    case ACT_MOUSE_DOUBLE:
+      return "double click";
+
+    case ACT_MOUSE_BTN:
+      switch (a.code) {
+        case MOUSE_LEFT:   return "left click";
+        case MOUSE_RIGHT:  return "right click";
+        case MOUSE_MIDDLE: return "middle click";
+        default:           break;
+      }
+      break;
+
+    default:
+      break;
+  }
+
+  if (a.fn < (uint8_t)FN_COUNT) return FN_LABEL[a.fn];
+  return "-";
+}
+
+/* "K1 hold: dictate" / "K3: repaste". The gesture is only spelled out for a
+ * hold, because a tap is the default and saying so costs four characters the
+ * 16-character budget does not have. */
+static void legendKeyRow(const Action &a, const char *key, char *out, size_t n)
+{
+  if (a.type == ACT_NONE) {
+    snprintf(out, n, "%s: -", key);
+    return;
+  }
+  if (actionIsHold(a)) {
+    snprintf(out, n, "%s hold: %s", key, actionLabel(a));
+  } else {
+    snprintf(out, n, "%s: %s", key, actionLabel(a));
+  }
+}
+
+static const char *navRoleLabel(uint8_t mode)
+{
+  switch (mode) {
+    case NAV_ARROWS: return "arrows";
+    case NAV_MOUSE:  return "cursor";
+    default:         return NULL;
+  }
+}
+
+static const char *angleRoleLabel(uint8_t mode)
+{
+  switch (mode) {
+    case ANGLE_VOLUME: return "vol";
+    case ANGLE_WHEEL:  return "wheel";
+    default:           return NULL;
+  }
+}
+
+/* Slot 3: what the nav stick and the angle knob do, as "stick role / knob
+ * role". Longest form is "stick cursor / wheel" - 20 characters, which is both
+ * COMPANION_LEGEND_MAX and what the companion's 6-pixel font fits across the
+ * panel. A control that does nothing on this layer drops out of the line
+ * entirely rather than printing a dash nobody can decode. */
+static void legendFooter(const LayerConfig &L, char *out, size_t n)
+{
+  const char *nav   = navRoleLabel(L.nav_mode);
+  const char *angle = angleRoleLabel(L.angle_mode);
+
+  if (nav != NULL && angle != NULL) {
+    snprintf(out, n, "stick %s / %s", nav, angle);
+  } else if (nav != NULL) {
+    snprintf(out, n, "stick %s", nav);
+  } else if (angle != NULL) {
+    snprintf(out, n, "knob %s", angle);
+  } else {
+    out[0] = '\0';
+  }
+}
+
+void layerLegend(uint8_t layer, uint8_t slot, char *out, size_t out_len)
+{
+  if (out == NULL || out_len == 0) return;
+  out[0] = '\0';
+  if (layer >= LAYER_COUNT) return;
+
+  const LayerConfig &L = LAYERS[layer];
+  switch (slot) {
+    case 0: legendKeyRow(L.key1, "K1", out, out_len); break;
+    case 1: legendKeyRow(L.key2, "K2", out, out_len); break;
+    case 2: legendKeyRow(L.chain_key, "K3", out, out_len); break;
+    case 3: legendFooter(L, out, out_len); break;
+    default: break;
   }
 }

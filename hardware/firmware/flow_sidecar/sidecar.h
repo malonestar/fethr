@@ -16,6 +16,7 @@
  *   glyphs.cpp      8x8 bitmaps
  *   settings.cpp    the runtime config + NVS persistence      (v2.1)
  *   serial_proto.cpp the host settings protocol + '?' console (v2.1)
+ *   companion.cpp   the optional companion-display UART link  (0.2.0)
  *
  * Everything else stays file-static inside its module.
  */
@@ -26,6 +27,7 @@
 #include <Arduino.h>
 
 #include "M5Chain.h"
+#include "companion.h"
 #include "config.h"
 #include "settings.h"
 
@@ -123,6 +125,12 @@ bool hostPresent(uint32_t now);
 /* ================================================================== */
 
 void chainBegin(uint32_t now);
+const char *chainBusName(void); /* which pin pair the bus auto-probe settled on */
+
+/* The same answer as numbers, for companion.cpp: it has to take the port pair
+ * the chain did NOT claim. Either pointer may be NULL. */
+void chainBusPins(int8_t *rx, int8_t *tx);
+
 void chainService(uint32_t now);   /* at most ONE bus transaction per call   */
 void chainInputTick(uint32_t now); /* pure-software timers; every loop()     */
 void chainOnLayerChanged(uint32_t now);
@@ -206,5 +214,41 @@ void protoEventLayer(uint8_t layer);
 void protoEventHold(uint8_t key_1based, bool active, uint8_t fn);
 void protoEventTap(const char *key_name);
 void protoEventChain(void);
+
+/* ================================================================== */
+/* companion.cpp (0.2.0)                                               */
+/* ================================================================== */
+
+/* Call AFTER chainBegin(): the port the companion opens is chosen from the one
+ * the Chain bus did not take. */
+void companionBegin(uint32_t now);
+
+/* Non-blocking: reads at most one line, runs the probe/keepalive timers and
+ * emits the periodic battery event. One more step in loop(). */
+void companionTick(uint32_t now);
+
+bool companionLinked(void);
+
+/* The `companion` section of the '?' console dump. */
+void companionPrintStatus(void);
+
+/* Events out. Each builds its line in a static buffer and writes it straight to
+ * the UART; all are no-ops while the link is down, so a call site never has to
+ * check. */
+void companionEventLayer(uint8_t layer);
+void companionEventState(uint8_t host_state);
+void companionEventHold(uint8_t key_1based, bool active);
+void companionEventChain(void);
+
+/* 0.3.0. `key_name` is the same vocabulary protoEventTap() uses ("1", "2",
+ * "chain", "chain2", "nav", "scroll"); `label` is actionLabel() for the action
+ * that fired, which is what the companion picks its icon from. Either may be
+ * NULL, in which case the field is omitted. */
+void companionEventTap(const char *key_name, const char *label);
+
+/* 0.3.0. A knob detent changed. Rate-limited inside companion.cpp to
+ * COMPANION_KNOB_MIN_GAP_MS; a movement inside the gap is held pending and
+ * emitted by companionTick(), so the LAST position is never lost. */
+void companionEventKnob(uint8_t detent);
 
 #endif /* FLOW_SIDECAR_H */

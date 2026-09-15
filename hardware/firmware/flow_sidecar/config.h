@@ -33,7 +33,7 @@
  * the other layers are complete but unproven on hardware; set to 1 to build
  * them. With one layer the Chain Key's long hold has nothing to cycle to and
  * is inert - its tap and double-tap still work. */
-#define FLOW_EXTRA_LAYERS 0
+#define FLOW_EXTRA_LAYERS 1
 
 /* ================================================================== */
 /* Debug / serial console                                              */
@@ -108,18 +108,35 @@
 /* Chain DualKey (ESP32-S3FN8) board pins                              */
 /* ================================================================== */
 
+/* KEYS_SWAPPED: 0 = "Key 1" is the button farther from the lanyard hole (M5's
+ * naming); 1 = the other way round. Use it when the DualKey is mounted USB-up
+ * and you want raw dictation on the LEFT key. It swaps the GPIOs AND the LED
+ * indices together, so colours stay under the right caps. */
+#define KEYS_SWAPPED 0
+
+#if KEYS_SWAPPED
+#define PIN_KEY1      17
+#define PIN_KEY2      0
+#else
 #define PIN_KEY1      0  /* Key1 - the button farther from the lanyard hole */
 #define PIN_KEY2      17 /* Key2                                            */
+#endif
 #define PIN_LED_DATA  21 /* WS2812 data for the two on-board key LEDs       */
 #define PIN_LED_POWER 40 /* WS2812 power enable - MUST be driven HIGH       */
 #define NUM_LEDS      2
 #define PIN_VBAT      10 /* battery voltage ADC (vendor Power example)      */
 #define PIN_VBUS      2  /* USB bus voltage ADC, same x1.51 divider         */
 
-/* Which NeoPixel index sits under which key. Swap if they look reversed.
- * (default for g_cfg.led_index_key1; key2 is always the other one) */
+/* Which NeoPixel index sits under which key (default for g_cfg.led_index_key1;
+ * key2 is always the other one). Verified on hardware 2026-09-14: NeoPixel 0
+ * sits under the GPIO-17 key, NeoPixel 1 under the GPIO-0 key. */
+#if KEYS_SWAPPED
 #define LED_INDEX_KEY1 0
 #define LED_INDEX_KEY2 1
+#else
+#define LED_INDEX_KEY1 1
+#define LED_INDEX_KEY2 0
+#endif
 
 /* G7 (SWITCH_1) and G8 (SWITCH_2) are the 3-position side-switch sense lines.
  * They are deliberately NOT touched anywhere in this firmware: driving them as
@@ -129,24 +146,22 @@
 /* Chain bus                                                           */
 /* ================================================================== */
 
-/* Compile-time bus selection. The DualKey has two HY2.0-4P Chain ports:
+/* The DualKey has two HY2.0-4P Chain ports, one per side:
  *
- *   "right" port (HY2.0-4P_2): RX = G5,  TX = G6    <-- default, all nodes here
- *   "left"  port (HY2.0-4P_1): RX = G47, TX = G48
+ *   HY2.0-4P_1: G47 / G48
+ *   HY2.0-4P_2: G5  / G6
  *
- * Note: the ESPHome integration page and the DualKey wiki PinMap disagree about
- * the left port (48/47 vs 47/48). The values below follow the ESPHome block;
- * if the left port ever gets used and enumerates nothing, try swapping them.
- *
- * To add the second bus later: declare a second `Chain` object, call begin() on
- * it with Serial1 + the left pins, give it its own role IDs + failure counter,
- * and extend the scheduler's round-robin with its tasks. Each Chain instance
- * manages exactly one UART. Not implemented here on purpose: single-bus only. */
+ * Which port the chain is on, and which pin is RX, is NOT assumed: at boot
+ * chain.cpp probes every pin pair (see BUS_CANDIDATES) until a node answers,
+ * and keeps probing if the chain later goes quiet, so either port works and
+ * the modules can be moved between them. The port the chain did not take is
+ * handed to the companion display link (companion.cpp), if enabled. The
+ * defines below are just the two pairs' names. */
 #define CHAIN_UART        Serial2
 #define CHAIN_RX_PIN      5
 #define CHAIN_TX_PIN      6
-#define CHAIN_LEFT_RX_PIN 47 /* reference only - second bus not implemented */
-#define CHAIN_LEFT_TX_PIN 48 /* reference only - second bus not implemented */
+#define CHAIN_LEFT_RX_PIN 47
+#define CHAIN_LEFT_TX_PIN 48
 #define CHAIN_BAUD        115200
 
 /* Per-transaction timeout. The library default is 100 ms, which would stall the
@@ -154,6 +169,11 @@
 #define CHAIN_CALL_TIMEOUT_MS 20
 /* Longer budget for the enumeration burst, which is only run on (re)connect. */
 #define CHAIN_ENUM_TIMEOUT_MS 200
+
+/* Minimum gap between "did the node count change?" checks after an
+ * enumerate-please packet (the last node repeats them; a loose cable makes
+ * them a storm). */
+#define CHAIN_HOTPLUG_CHECK_MS 1000
 
 /* Consecutive non-CHAIN_OK results that trigger a re-enumeration. */
 #define CHAIN_FAIL_LIMIT 5
@@ -165,9 +185,78 @@
 
 /* Polling intervals per node. One Chain transaction is issued per loop()
  * iteration, round-robin, so these are lower bounds, not guarantees. */
-#define CHAIN_POLL_KEY_MS   0  /* chain key: every scheduler visit */
+/* Chain key: NOT 0. At 0 the key poll is due on every loop, the round-robin
+ * always finds work, and the low-priority node-LED / RGB-sync services that
+ * run only on an idle loop never execute (seen on hardware: Chain Key LED
+ * dark at idle). 6 ms still gives ~160 polls/s. */
+#define CHAIN_POLL_KEY_MS   6
 #define CHAIN_POLL_JOY_MS   10
 #define CHAIN_POLL_ANGLE_MS 10
+
+/* ================================================================== */
+/* Companion display link (AtomS3R on the free Chain port)             */
+/* ================================================================== */
+
+/* 1 = compile the companion link (COMPANION.md). 0 removes it entirely:
+ * every companionXxx() becomes an empty stub, no UART is opened, and no state
+ * is carried.
+ *
+ * The companion is NOT a Chain node. It is a second ESP32 speaking the
+ * newline-delimited JSON of PROTOCOL.md over a plain UART, cabled to whichever
+ * HY2.0-4P port the Chain bus did not claim. chainBegin() auto-probes the two
+ * ports (BUS_CANDIDATES in chain.cpp); companionBegin() reads back the winner
+ * with chainBusPins() and takes the OTHER pair, so neither end has to be
+ * configured and either port works for either purpose.
+ *
+ * Because both ends are controllers on a straight-through cable, TX/RX
+ * orientation is unknown, so the DualKey probes both orders (the Atom's side
+ * is fixed - see hardware/firmware/companion-atoms3r/). */
+#define FLOW_COMPANION 1
+
+/* Serial2 belongs to the Chain bus (CHAIN_UART); this is the other one. */
+#define COMPANION_UART Serial1
+#define COMPANION_BAUD 115200
+
+/* Unanswered `hello` beacons go out this often, alternating the pin order on
+ * each attempt, until the companion replies. */
+#define COMPANION_PROBE_MS 1500
+
+/* No inbound line for this long = the companion is gone; drop back to
+ * probing. The companion pings every 3 s, so this is three missed pings. */
+#define COMPANION_LINK_TIMEOUT_MS 10000
+
+/* Unsolicited `battery` cadence on the companion link (same as the host's). */
+#define COMPANION_BATT_EVENT_MS 30000
+
+/* Longest accepted inbound line. Companion commands are tiny; a longer line is
+ * dropped (not truncated) so half a command can never parse. */
+#define COMPANION_MAX_LINE 192
+
+/* Outbound scratch buffer. The largest message is the `hello` beacon, which
+ * carries every layer name AND the four legend strings; static, so the link
+ * never touches the heap. Four layers + a 4x20 legend lands near 230 bytes, so
+ * 384 leaves headroom for a fifth layer without a second look. */
+#define COMPANION_OUT_BYTES 384
+
+/* ---- the key legend pushed to the companion (0.3.0) ---- */
+
+/* The companion's idle screen is a legend for the CURRENT layer, and the
+ * DualKey is its only source: the strings are built from LAYERS[] and shipped
+ * with every `hello` and `layer` event, so the screen cannot drift from the
+ * table the keys actually fire from.
+ *
+ * Four slots: Key1, Key2, Chain Key, and one line describing the stick and the
+ * knob. The first three are built to fit 16 characters (see legendKeyRow());
+ * the footer is allowed the full 20, which is what "arrows + wheel knob"
+ * needs and what the companion's 6-pixel console font fits across 128 px. */
+#define COMPANION_LEGEND_SLOTS 4
+#define COMPANION_LEGEND_MAX   20
+
+/* Knob detents are forwarded as `knob` events, rate-limited to this gap so a
+ * fast sweep cannot flood the link (10/s). The LAST detent is always sent:
+ * a movement inside the gap is held pending and emitted by companionTick(),
+ * never dropped. */
+#define COMPANION_KNOB_MIN_GAP_MS 100
 
 /* ================================================================== */
 /* Chained-node RGB LEDs (v2)                                          */
@@ -242,6 +331,8 @@
 
 /* Axis orientation. Flip a sign to (-1) if a stick feels inverted.
  * (defaults for g_cfg.nav_x_sign / nav_y_sign / scroll_x_sign / scroll_y_sign) */
+/* Kyle's desk layout (2026-09-15): the joystick is mounted rotated 180
+ * degrees, so both axes are inverted. Also live-settable from the app. */
 #define NAV_X_SIGN    (+1)
 #define NAV_Y_SIGN    (+1)
 #define SCROLL_X_SIGN (+1)
@@ -305,7 +396,7 @@
  * not pull in M5Chain.h. mono.cpp does the cast to mono_brightness_level_t /
  * mono_rotation_t. (defaults for g_cfg.mono_brightness / g_cfg.mono_rotation) */
 #define MONO_BRIGHTNESS 5 /* 0..7  -> MONO_BRIGHTNESS_OFF .. _LEVEL_7      */
-#define MONO_ROTATION   0 /* degrees, 0|90|180|270 -> MONO_ROTATION_0..270 */
+#define MONO_ROTATION   0 /* degrees, 0|180 etc -> MONO_ROTATION_0..270; live-settable from the app */
 
 /* What the panel shows when nothing else wants it (default for
  * g_cfg.mono_idle): 0 = blank (the v2.0 behaviour), 1 = the current layer's
@@ -482,5 +573,19 @@ const char *fnName(uint8_t fn);
 
 /* Reverse lookup for `set fn_rgb.<NAME>`. Returns FN_NONE when unknown. */
 uint8_t fnByName(const char *name);
+
+/* ---- human labels, for the companion display (0.3.0) ---- */
+
+/* A short lower-case description of what an action DOES ("play/pause",
+ * "right click", "dictate"). Derived from the action itself rather than from
+ * its FnId, because one FnId can cover several bindings - every MEDIA action
+ * carries FN_MEDIA, and "play/pause" and "mute" are not the same legend.
+ * Never NULL: an unmapped action yields "-". */
+const char *actionLabel(const Action &a);
+
+/* Build legend slot `slot` (0=Key1, 1=Key2, 2=Chain Key, 3=stick+knob) for
+ * `layer` into `out`, always NUL-terminated. Truncates rather than overflows.
+ * This is the single source of the companion's idle screen. */
+void layerLegend(uint8_t layer, uint8_t slot, char *out, size_t out_len);
 
 #endif /* FLOW_CONFIG_H */

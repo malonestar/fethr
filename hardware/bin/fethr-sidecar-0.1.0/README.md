@@ -6,15 +6,15 @@ are in [../../FLASH.md](../../FLASH.md); the short version is "write
 
 | File | Bytes | Flash offset | What it is |
 |---|---:|---|---|
-| `firmware.factory.bin` | 503,456 | **`0x0`** | All four images below, merged. **Use this one.** |
+| `firmware.factory.bin` | 509,856 | **`0x0`** | All four images below, merged. **Use this one.** |
 | `bootloader.bin` | 19,968 | `0x0` | second-stage bootloader |
 | `partitions.bin` | 3,072 | `0x8000` | partition table (`default_8MB.csv`) |
 | `boot_app0.bin` | 8,192 | `0xE000` | OTA data — points the bootloader at `app0` |
-| `firmware.bin` | 437,920 | `0x10000` | the application (`app0`) |
+| `firmware.bin` | 444,320 | `0x10000` | the application (`app0`) |
 
 The offsets are the ones the build itself used when it merged the factory image,
 and the partition table is Espressif's stock `default_8MB.csv` (`nvs` at `0x9000`,
-`otadata` at `0xE000`, `app0` at `0x10000`). `0x10000 + 437,920 = 503,456`, which is
+`otadata` at `0xE000`, `app0` at `0x10000`). `0x10000 + 444,320 = 509,856`, which is
 exactly the factory image's size — the merge is contiguous from offset 0.
 
 Flashing the four separate files at their offsets is equivalent to flashing the
@@ -33,12 +33,24 @@ Get-FileHash firmware.factory.bin -Algorithm SHA256    # Windows PowerShell
 
 ## Built from
 
-`hardware/firmware/pio/` at version `0.1.0`, with `FLOW_EXTRA_LAYERS 0` (the FLOW
-layer only).
+`hardware/firmware/pio/` at version `0.1.0`, with **`FLOW_EXTRA_LAYERS 1`** — all four
+layers (FLOW, MEDIA, EDIT, MOUSE) and the companion-display link (`FLOW_COMPANION 1`).
+
+Two things changed with this rebuild and both are visible from the outside:
+
+* **Four layers, so the Chain Key's long hold now cycles them.** A ≥1 s hold goes
+  FLOW → MEDIA → EDIT → MOUSE instead of doing nothing. The earlier image built the FLOW
+  layer alone. MEDIA/EDIT/MOUSE compile and are complete but have had far less time on
+  hardware than FLOW; set `FLOW_EXTRA_LAYERS` back to `0` in `config.h` for the old
+  single-layer behaviour.
+* **The companion link speaks the key legend.** The image carries the `legend` field on
+  `hello`/`layer` plus the `tap` and `knob` events the
+  [companion display](../../COMPANION.md) animates from. The previous image predates all
+  of that and would leave a companion showing "no legend yet".
 
 ```
-RAM:   18.1% (59,288 of 327,680 bytes)
-Flash: 12.8% (427,890 of 3,342,336 bytes)
+RAM:   18.3% (59,912 of 327,680 bytes)
+Flash: 13.0% (433,786 of 3,342,336 bytes)
 ```
 
 | Component | Version |

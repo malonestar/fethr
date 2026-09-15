@@ -15,6 +15,7 @@ double-tap work as normal.
 
 * **Flashing** (prebuilt images, no toolchain): [FLASH.md](FLASH.md)
 * **Serial protocol** between the device and the app: [PROTOCOL.md](PROTOCOL.md)
+* **Companion display** — the optional AtomS3R second screen: [COMPANION.md](COMPANION.md)
 * **Build notes, pinned versions, what is and isn't verified against real
   hardware**: [firmware/flow_sidecar/FIRMWARE_NOTES.md](firmware/flow_sidecar/FIRMWARE_NOTES.md)
 
@@ -31,18 +32,29 @@ double-tap work as normal.
 Only the DualKey is required. Every other node is optional — the firmware
 enumerates what is present and the features belonging to a missing node drop out.
 
+There is also an optional **companion display** — an [AtomS3R](https://docs.m5stack.com/en/core/AtomS3R)
+on an [Atomic ToChain Base](https://docs.m5stack.com/en/accessory/Atomic_ToChain_Base),
+plugged into the DualKey's *other* Chain port. It is not a Chain node: it is a second
+controller on its own UART. On a colour LCD it shows a **legend of what every key does
+on the current layer** — built by the DualKey from its own layer table, so it cannot go
+stale — plus the dictation state, and its button cycles layers. See
+[COMPANION.md](COMPANION.md).
+
 ## Wiring
 
-All nodes go on the DualKey's **right-hand** HY2.0-4P port (RX = G5, TX = G6). The
-triangle moulded into each Chain Bridge connector must point **away** from the
-DualKey, outward along the chain.
+All Chain nodes go on **one** of the DualKey's two HY2.0-4P ports. The firmware
+auto-probes both pairs (`G5/G6` and `G47/G48`, in both TX/RX orders) at boot and
+settles on whichever answers, so either port works and you do not have to know which
+is which. The triangle moulded into each Chain Bridge connector must point **away**
+from the DualKey, outward along the chain.
 
 Node order does not matter: the firmware enumerates by device type, and of the two
 joysticks the one nearest the DualKey becomes the nav stick. A comfortable physical
 order is DualKey → Key → Joystick → Joystick → Angle → Mono, with the panel at the
 far end facing you.
 
-The left-hand port (G47/G48) is not used. Driving G7/G8 — the side-switch sense
+The **other** port is left free for the optional companion display, which takes
+whichever pair the Chain bus did not claim. Driving G7/G8 — the side-switch sense
 lines — breaks the board's ability to power off cleanly, so the firmware never
 touches them.
 
@@ -99,22 +111,33 @@ hardware/
   README.md                     this file
   FLASH.md                      flashing, for someone with no toolchain
   PROTOCOL.md                   the device <-> app serial protocol
+  COMPANION.md                  the optional AtomS3R companion display
   flash.ps1                     one-command flasher (Windows)
-  bin/fethr-sidecar-0.1.0/      prebuilt images + SHA256SUMS
+  bin/fethr-sidecar-0.1.0/           prebuilt DualKey images + SHA256SUMS
+  bin/fethr-companion-atoms3r-0.1.0/ prebuilt AtomS3R images + SHA256SUMS
   research/
     chain_firmware_research.md  stock verdict, bus protocol, pins, API, gotchas
   firmware/
     pio/                        SOURCE OF TRUTH (PlatformIO project)
       platformio.ini
       include/  config.h actions.h glyphs.h sidecar.h settings.h serial_proto.h
+                companion.h
       src/      main.cpp chain.cpp mono.cpp leds.cpp layers.cpp actions.cpp
-                glyphs.cpp settings.cpp serial_proto.cpp
+                glyphs.cpp settings.cpp serial_proto.cpp companion.cpp
       tools/    sync_ino.ps1    regenerates the Arduino sketch folder
+    companion-atoms3r/          the companion display (separate PlatformIO project)
+      platformio.ini
+      include/  companion_proto.h
+      src/      main.cpp
     flow_sidecar/               GENERATED flat copy for the Arduino IDE
       flow_sidecar.ino + the same .h/.cpp files
       FIRMWARE_NOTES.md         hand-maintained: build, flash, API verification,
                                 first-power-on checklist
 ```
+
+The two firmwares are separate projects on purpose: different boards, different
+libraries (M5Chain vs M5Unified), different USB modes. They share only the wire
+format in PROTOCOL.md.
 
 Edit under `firmware/pio/` and regenerate the Arduino copy:
 
@@ -138,8 +161,11 @@ defensively and is a one-line fix, most of them without a reflash — the app ca
   against a meter.
 * Whether the chained nodes' own click-feedback pulses visibly fight the colours
   the firmware writes. `node_leds: false` turns our writes off if so.
-* The left Chain port's TX/RX assignment — M5Stack's own documents contradict each
-  other. The port is unused here.
+* Each Chain port's TX/RX assignment — M5Stack's own documents contradict each
+  other. Both the bus probe and the companion link try both orders, so neither
+  has to be right.
+* The companion display, in its entirety — nothing about it has been on hardware.
+  [COMPANION.md](COMPANION.md) has the list.
 
 FIRMWARE_NOTES.md §6 has the full list with what the firmware does about each.
 
@@ -150,4 +176,5 @@ FIRMWARE_NOTES.md §6 has the full list with what the firmware does about each.
 * The other three layers, once FLOW has been through real use.
 * Remapping keys from the app. Today the protocol edits appearance and feel;
   which key fires what is compile-time data.
-* The second Chain port, for more nodes.
+* The second Chain port as a second *bus*, for more nodes. It currently carries the
+  companion display, which is a plain UART link rather than a Chain bus.

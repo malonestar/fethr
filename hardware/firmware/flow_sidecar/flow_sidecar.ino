@@ -104,8 +104,14 @@ void setup()
   uint32_t now = millis();
   chainBegin(now); /* emits the `chain` event once enumeration succeeds */
 
-  /* Announce the starting layer on the panel and the key LEDs. */
-  monoOverlay(LAYERS[g_layer].glyph, MONO_LAYER_MS, now);
+  /* AFTER chainBegin(): the companion takes whichever HY2.0-4P port the bus
+   * auto-probe did not settle on. Opens a UART and arms the beacon; nothing
+   * blocks and nothing waits for an answer. */
+  companionBegin(now);
+
+  /* Announce the starting layer on the panel and the key LEDs: scroll the
+   * layer name once, then settle on its letter (same as a layer change). */
+  monoScrollText(LAYERS[g_layer].name, /*announce_layer=*/true);
   ledsUpdate(now);
   protoEventLayer(g_layer);
   FLOG("[flow-sidecar] layer %u (%s)\r\n", (unsigned)g_layer, LAYERS[g_layer].name);
@@ -121,6 +127,7 @@ void loop()
   chainService(now);    /* at most one Chain transaction          */
   ledsUpdate(now);      /* repaint only when a colour changed     */
   protoTick(now);       /* non-blocking console + JSON protocol   */
+  companionTick(now);   /* companion link: one line in, timers    */
 }
 
 /* Whole seconds since boot. millis() wraps after ~49.7 days; so does this,
@@ -201,6 +208,10 @@ void hostStateSet(uint8_t state, uint32_t now)
       break;
   }
 
+  /* The early return above means this fires on a CHANGE, which is exactly the
+   * contract the companion link advertises. */
+  companionEventState(state);
+
   FLOG("[host] state %s\r\n", HOST_STATE_NAME[state]);
 }
 
@@ -233,12 +244,14 @@ static void scanLocalKeys(uint32_t now)
         k.hold_active = true;
         actionHoldPress(a);
         protoEventHold((uint8_t)(i + 1), true, a.fn);
+        companionEventHold((uint8_t)(i + 1), true);
         FLOG("[key%u] hold down type=%u code=0x%02X\r\n", (unsigned)(i + 1), (unsigned)a.type,
              (unsigned)a.code);
       } else {
         actionFire(a, now);
         ledFlashKey(i, now);
         protoEventTap((i == 0) ? "1" : "2");
+        companionEventTap((i == 0) ? "1" : "2", actionLabel(a));
         FLOG("[key%u] tap type=%u code=0x%02X\r\n", (unsigned)(i + 1), (unsigned)a.type,
              (unsigned)a.code);
       }
@@ -253,6 +266,7 @@ static void scanLocalKeys(uint32_t now)
          * release IS all the feedback there is, so show it. */
         if (!hostPresent(now)) monoOverlay(G_CHECK, MONO_CHECK_MS, now);
         protoEventHold((uint8_t)(i + 1), false, k.hold_action.fn);
+        companionEventHold((uint8_t)(i + 1), false);
         FLOG("[key%u] hold up\r\n", (unsigned)(i + 1));
       }
     }
@@ -290,7 +304,11 @@ static void enterLayer(uint8_t layer, uint32_t now)
 
   chainOnLayerChanged(now); /* resets stick/knob state, repaints node LEDs,
                              * and hands the panel its layer announcement */
+  /* A layer change from ANY source lands here, so both listeners are told
+   * exactly once whether it came from the Chain Key, the host or the
+   * companion's own button. */
   protoEventLayer(g_layer);
+  companionEventLayer(g_layer);
 
   FLOG("[layer] -> %u (%s)\r\n", (unsigned)g_layer, LAYERS[g_layer].name);
 }

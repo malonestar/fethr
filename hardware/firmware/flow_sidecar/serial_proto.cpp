@@ -576,6 +576,10 @@ static void cmdStatus(void)
   outPrintf(",\"holds\":[%s,%s]", boolName(g_key[0].hold_active),
             boolName(g_key[1].hold_active));
   outNodes();
+  /* The companion is not a Chain node, so it cannot appear in `nodes`; it gets
+   * its own field. Present even when the link is compiled out, reporting
+   * false - a host should not have to tell "no companion" from "no field". */
+  outPrintf(",\"companion\":{\"linked\":%s}", boolName(companionLinked()));
   outPrintf(",\"uptime_s\":%lu", (unsigned long)uptimeSeconds(g_now));
   frameEnd();
 }

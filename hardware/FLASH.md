@@ -1,5 +1,8 @@
 # Flashing the fethr sidecar
 
+> Flashing the optional **companion display** (an AtomS3R) is a different board and a
+> different image — see [COMPANION.md](COMPANION.md). Everything below is the DualKey.
+
 The M5Stack Chain DualKey ships with M5Stack's own firmware. This replaces it with
 fethr's. You do not need a toolchain, a compiler, or a serial terminal — one file
 and a browser is enough. Ten minutes, most of which is reading.
