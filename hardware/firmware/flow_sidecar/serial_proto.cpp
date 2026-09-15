@@ -33,6 +33,7 @@
 
 #include "sidecar.h"
 
+#include "keynames.h"
 #include "serial_proto.h"
 
 #include <stdarg.h>
@@ -252,7 +253,7 @@ static void outNodes(void)
 static void outConfig(void)
 {
   outPrintf(",\"layer_rgb\":[");
-  for (uint8_t i = 0; i < LAYER_COUNT; i++) {
+  for (uint8_t i = 0; i < layerCount(); i++) {
     if (i) outChar(',');
     outPrintf("[%u,%u,%u]", (unsigned)g_cfg.layer_rgb[i][0], (unsigned)g_cfg.layer_rgb[i][1],
               (unsigned)g_cfg.layer_rgb[i][2]);
@@ -287,6 +288,95 @@ static void outConfig(void)
             (int)g_cfg.scroll_x_sign);
   outPrintf(",\"mouse_y_sign\":%d", (int)g_cfg.mouse_y_sign);
   outPrintf(",\"led_index_key1\":%u", (unsigned)g_cfg.led_index_key1);
+  /* proto 2. Mounting orientation: the two axis swaps compose with the four
+   * signs above to cover every 90-degree stick mounting, and swap_keys is the
+   * old KEYS_SWAPPED build flag as a setting. */
+  outPrintf(",\"swap_keys\":%s,\"nav_swap_xy\":%s,\"scroll_swap_xy\":%s",
+            boolName(g_cfg.swap_keys != 0), boolName(g_cfg.nav_swap_xy != 0),
+            boolName(g_cfg.scroll_swap_xy != 0));
+}
+
+/* ================================================================== */
+/* The layer table (proto 2)                                           */
+/* ================================================================== */
+
+/* Slot order is wire format: it is the order `get_layers` emits and the set
+ * `set_action` accepts. The pointer-to-member indirection keeps the two from
+ * drifting apart - one table names the slots AND locates them. */
+struct ActionSlot {
+  const char *name;
+  Action LayerRuntime::*member;
+};
+
+static const ActionSlot ACTION_SLOTS[] = {
+    {PROTO_SLOT_KEY1, &LayerRuntime::key1},
+    {PROTO_SLOT_KEY2, &LayerRuntime::key2},
+    {PROTO_SLOT_CHAIN_KEY, &LayerRuntime::chain_key},
+    {PROTO_SLOT_CHAIN_KEY_DOUBLE, &LayerRuntime::chain_key_double},
+    {PROTO_SLOT_NAV_CLICK, &LayerRuntime::nav_click},
+    {PROTO_SLOT_SCROLL_CLICK, &LayerRuntime::scroll_click},
+};
+static const uint8_t ACTION_SLOT_COUNT =
+    (uint8_t)(sizeof(ACTION_SLOTS) / sizeof(ACTION_SLOTS[0]));
+
+static bool slotByName(const char *name, uint8_t *out)
+{
+  if (name == NULL) return false;
+  for (uint8_t i = 0; i < ACTION_SLOT_COUNT; i++) {
+    if (strcmp(ACTION_SLOTS[i].name, name) == 0) {
+      if (out != NULL) *out = i;
+      return true;
+    }
+  }
+  return false;
+}
+
+/* One action object, exactly the `A` shape PROTOCOL.md documents. `mods` is
+ * always present, even when empty, so a host can read `a.mods.length` without
+ * a guard; `key` is "" for an unbound slot (and for any code the vocabulary
+ * has no name for) rather than absent, for the same reason. */
+static void outAction(const Action &a)
+{
+  char key[FLOW_KEYNAME_MAX + 1];
+  actionToKeyName(a, key, sizeof(key));
+
+  outPrintf("{\"type\":\"%s\",\"key\":", actionTypeName(a.type));
+  outJsonStr(key);
+
+  outPrintf(",\"mods\":[");
+  bool first = true;
+  for (uint8_t i = 0; i < FLOW_MOD_COUNT; i++) {
+    uint8_t bit = 0;
+    if (!modByName(modNameAt(i), &bit)) continue;
+    if ((a.mods & bit) == 0) continue;
+    if (!first) outChar(',');
+    first = false;
+    outPrintf("\"%s\"", modNameAt(i));
+  }
+  outPrintf("],\"fn\":\"%s\"}", fnClassName(a.fn));
+}
+
+static void outLayerObject(uint8_t index)
+{
+  const LayerRuntime &L = layerAt(index);
+
+  uint8_t rgb[3];
+  layerRgb(index, rgb);
+
+  outPrintf("{\"index\":%u,\"name\":", (unsigned)index);
+  outJsonStr(L.name);
+  outPrintf(",\"rgb\":[%u,%u,%u]", (unsigned)rgb[0], (unsigned)rgb[1], (unsigned)rgb[2]);
+  outPrintf(",\"nav_mode\":\"%s\",\"scroll_mode\":\"%s\",\"angle_mode\":\"%s\"",
+            navModeName(L.nav_mode), scrollModeName(L.scroll_mode),
+            angleModeName(L.angle_mode));
+
+  outPrintf(",\"actions\":{");
+  for (uint8_t s = 0; s < ACTION_SLOT_COUNT; s++) {
+    if (s) outChar(',');
+    outPrintf("\"%s\":", ACTION_SLOTS[s].name);
+    outAction(L.*(ACTION_SLOTS[s].member));
+  }
+  outPrintf("}}");
 }
 
 /* ================================================================== */
@@ -359,7 +449,7 @@ static bool applySet(const char *path, JsonVariantConst v, const char **err)
       return false;
     }
     uint8_t i = (uint8_t)(idx[0] - '0');
-    if (i >= LAYER_COUNT) {
+    if (i >= layerCount()) {
       *err = "bad layer index";
       return false;
     }
@@ -485,7 +575,7 @@ static bool applySet(const char *path, JsonVariantConst v, const char **err)
   /* Takes effect at the next boot, by definition - the host is expected to
    * follow it with `save`. */
   if (strcmp(path, "boot_layer") == 0) {
-    if (!jsonInt(v, 0, (long)LAYER_COUNT - 1, &n)) {
+    if (!jsonInt(v, 0, (long)layerCount() - 1, &n)) {
       *err = "bad layer index";
       return false;
     }
@@ -518,6 +608,28 @@ static bool applySet(const char *path, JsonVariantConst v, const char **err)
     }
     g_cfg.led_index_key1 = (uint8_t)n;
     return true;
+  }
+
+  /* ---- mounting orientation (proto 2) ---- */
+
+  /* All three are live. `swap_keys` is picked up by keysApplySwap() from
+   * settingsApplyAll() - which the caller runs right after this returns - and
+   * the two axis swaps are read in the poll path, so they take effect on the
+   * next stick sample. Nothing here needs a reboot, which is the point. */
+  {
+    uint8_t *flag_field = NULL;
+    if (strcmp(path, "swap_keys") == 0) flag_field = &g_cfg.swap_keys;
+    else if (strcmp(path, "nav_swap_xy") == 0) flag_field = &g_cfg.nav_swap_xy;
+    else if (strcmp(path, "scroll_swap_xy") == 0) flag_field = &g_cfg.scroll_swap_xy;
+
+    if (flag_field != NULL) {
+      if (!jsonBool(v, &flag)) {
+        *err = "expected bool";
+        return false;
+      }
+      *flag_field = flag ? 1 : 0;
+      return true;
+    }
   }
 
   *err = "unknown path";
@@ -559,9 +671,9 @@ static void cmdHello(void)
   replyBegin(PROTO_EV_HELLO);
   outPrintf(",\"fw\":\"%s\",\"proto\":%u,\"layers\":[", FLOW_SIDECAR_VERSION,
             (unsigned)FLOW_SIDECAR_PROTO);
-  for (uint8_t i = 0; i < LAYER_COUNT; i++) {
+  for (uint8_t i = 0; i < layerCount(); i++) {
     if (i) outChar(',');
-    outJsonStr(LAYERS[i].name);
+    outJsonStr(layerAt(i).name);
   }
   outPrintf("],\"layer\":%u", (unsigned)g_layer);
   outNodes();
@@ -614,10 +726,215 @@ static void cmdSet(JsonVariantConst doc)
   frameEnd();
 }
 
+/* ================================================================== */
+/* The layout commands (proto 2)                                       */
+/* ================================================================== */
+
+/*
+ * Everything a layout change has to do once it has been applied, in the one
+ * order that is safe:
+ *
+ *   1. the REPLY is already flushed by the caller - reply and event share
+ *      g_out, so a handler must never start an event mid-reply;
+ *   2. settingsApplyAll() drops the LED cache and re-queues the panel writes,
+ *      so a recoloured or rebound key repaints without a bus stall;
+ *   3. `layout_changed` tells any OTHER host client to re-read get_layers;
+ *   4. the companion gets a fresh `layer` event, which carries the rebuilt
+ *      legend - that is what stops a renamed layer or a rebound key leaving a
+ *      stale line on the screen, since the companion holds no table.
+ */
+static void layoutChanged(void)
+{
+  settingsApplyAll();
+  protoEventLayoutChanged();
+  companionEventLayer(g_layer);
+}
+
+static void cmdGetLayers(void)
+{
+  replyBegin(PROTO_EV_LAYERS);
+  outPrintf(",\"layers\":[");
+  for (uint8_t i = 0; i < layerCount(); i++) {
+    if (i) outChar(',');
+    outLayerObject(i);
+  }
+  outPrintf("]");
+  frameEnd();
+}
+
+/*
+ * `set_action`: rebind one slot on one layer, live.
+ *
+ * A hold that is already in flight is NOT disturbed: scanLocalKeys() copies
+ * the Action into g_key[].hold_action at the press edge and releases from that
+ * copy, and chain.cpp captures the Chain Key's single tap the same way. So the
+ * gesture in progress finishes with the binding it started with, and the new
+ * one takes effect from the next press - which is the only behaviour that
+ * cannot strand a key down on the host.
+ */
+static void cmdSetAction(JsonVariantConst doc)
+{
+  long n = 0;
+  if (!jsonInt(doc["layer"], 0, (long)layerCount() - 1, &n)) {
+    replyErr("bad layer index");
+    return;
+  }
+  uint8_t layer = (uint8_t)n;
+
+  JsonVariantConst sv = doc["slot"];
+  uint8_t          slot = 0;
+  if (!slotByName(sv.is<const char *>() ? sv.as<const char *>() : NULL, &slot)) {
+    replyErr("unknown slot");
+    return;
+  }
+
+  JsonVariantConst av = doc["action"];
+  if (!av.is<JsonObjectConst>()) {
+    replyErr("missing action");
+    return;
+  }
+
+  JsonVariantConst tv = av["type"];
+  uint8_t          type = ACT_NONE;
+  if (!actionTypeByName(tv.is<const char *>() ? tv.as<const char *>() : NULL, &type)) {
+    replyErr("unknown type");
+    return;
+  }
+
+  /* `fn` is optional: an action that does not say gets "custom", i.e. no
+   * opinion about the colour, which is the sane default for a host that only
+   * cares which key fires. */
+  uint8_t          fn = FN_NONE;
+  JsonVariantConst fv = av["fn"];
+  if (!fv.isNull()) {
+    if (!fv.is<const char *>() || !fnClassByName(fv.as<const char *>(), &fn)) {
+      replyErr("unknown fn");
+      return;
+    }
+  }
+
+  uint8_t          mods = MOD_NONE;
+  JsonVariantConst mv   = av["mods"];
+  if (!mv.isNull()) {
+    if (!mv.is<JsonArrayConst>()) {
+      replyErr("expected mods array");
+      return;
+    }
+    JsonArrayConst arr = mv.as<JsonArrayConst>();
+    for (JsonVariantConst e : arr) {
+      uint8_t bit = 0;
+      if (!e.is<const char *>() || !modByName(e.as<const char *>(), &bit)) {
+        replyErr("unknown mod");
+        return;
+      }
+      mods = (uint8_t)(mods | bit);
+    }
+  }
+
+  JsonVariantConst kv = av["key"];
+  const char      *key = kv.is<const char *>() ? kv.as<const char *>() : NULL;
+
+  /* Build and validate into a local FIRST: g_cfg is only written once every
+   * field has resolved, so a rejected command leaves the layout untouched. */
+  Action      built;
+  const char *err = NULL;
+  if (!keyNameToAction(type, key, mods, fn, &built, &err)) {
+    replyErr((err != NULL) ? err : "bad action");
+    return;
+  }
+
+  g_cfg.layers[layer].*(ACTION_SLOTS[slot].member) = built;
+
+  replyOk();
+  layoutChanged();
+}
+
+/*
+ * `set_layer_meta`: rename/recolour a layer and change what its stick and knob
+ * do. Every field is optional and any subset may be sent.
+ *
+ * Two passes on purpose - validate everything into locals, then commit - so a
+ * command with a good name and a bad nav_mode changes nothing at all rather
+ * than half of it.
+ */
+static void cmdSetLayerMeta(JsonVariantConst doc)
+{
+  long n = 0;
+  if (!jsonInt(doc["layer"], 0, (long)layerCount() - 1, &n)) {
+    replyErr("bad layer index");
+    return;
+  }
+  uint8_t layer = (uint8_t)n;
+
+  bool        have_name = false;
+  char        name[FLOW_LAYER_NAME_MAX + 1] = {0};
+  bool        have_rgb = false;
+  uint8_t     rgb[3]   = {0, 0, 0};
+  bool        have_nav = false, have_scroll = false, have_angle = false;
+  uint8_t     nav_mode = 0, scroll_mode = 0, angle_mode = 0;
+
+  JsonVariantConst nv = doc["name"];
+  if (!nv.isNull()) {
+    const char *s = nv.is<const char *>() ? nv.as<const char *>() : NULL;
+    if (s == NULL || s[0] == '\0' || strlen(s) > (size_t)FLOW_LAYER_NAME_MAX) {
+      replyErr("name must be 1..8 chars");
+      return;
+    }
+    snprintf(name, sizeof(name), "%s", s);
+    have_name = true;
+  }
+
+  JsonVariantConst cv = doc["rgb"];
+  if (!cv.isNull()) {
+    if (!jsonRgb(cv, rgb)) {
+      replyErr("expected [r,g,b] 0..255");
+      return;
+    }
+    have_rgb = true;
+  }
+
+  JsonVariantConst nmv = doc["nav_mode"];
+  if (!nmv.isNull()) {
+    if (!nmv.is<const char *>() || !navModeByName(nmv.as<const char *>(), &nav_mode)) {
+      replyErr("expected arrows|mouse|off");
+      return;
+    }
+    have_nav = true;
+  }
+
+  JsonVariantConst smv = doc["scroll_mode"];
+  if (!smv.isNull()) {
+    if (!smv.is<const char *>() || !scrollModeByName(smv.as<const char *>(), &scroll_mode)) {
+      replyErr("expected wheel_pan|wheel_arrows|off");
+      return;
+    }
+    have_scroll = true;
+  }
+
+  JsonVariantConst amv = doc["angle_mode"];
+  if (!amv.isNull()) {
+    if (!amv.is<const char *>() || !angleModeByName(amv.as<const char *>(), &angle_mode)) {
+      replyErr("expected volume|wheel|off");
+      return;
+    }
+    have_angle = true;
+  }
+
+  LayerRuntime &L = g_cfg.layers[layer];
+  if (have_name) memcpy(L.name, name, sizeof(L.name));
+  if (have_rgb) memcpy(g_cfg.layer_rgb[layer], rgb, sizeof(rgb));
+  if (have_nav) L.nav_mode = nav_mode;
+  if (have_scroll) L.scroll_mode = scroll_mode;
+  if (have_angle) L.angle_mode = angle_mode;
+
+  replyOk();
+  layoutChanged();
+}
+
 static void cmdLayer(JsonVariantConst doc)
 {
   long n = 0;
-  if (!jsonInt(doc["index"], 0, (long)LAYER_COUNT - 1, &n)) {
+  if (!jsonInt(doc["index"], 0, (long)layerCount() - 1, &n)) {
     replyErr("bad layer index");
     return;
   }
@@ -719,6 +1036,12 @@ static void handleJsonLine(const char *line)
     } else {
       replyErr("nvs clear failed");
     }
+  } else if (strcmp(cmd, "get_layers") == 0) {
+    cmdGetLayers();
+  } else if (strcmp(cmd, "set_action") == 0) {
+    cmdSetAction(root);
+  } else if (strcmp(cmd, "set_layer_meta") == 0) {
+    cmdSetLayerMeta(root);
   } else if (strcmp(cmd, "layer") == 0) {
     cmdLayer(root);
   } else if (strcmp(cmd, "identify") == 0) {
@@ -764,13 +1087,23 @@ static void eventBattery(void)
 void protoEventLayer(uint8_t layer)
 {
 #if FLOW_SERIAL_PROTO
-  if (layer >= LAYER_COUNT) return;
+  if (layer >= layerCount()) return;
   eventBegin(PROTO_EV_LAYER);
   outPrintf(",\"index\":%u,\"name\":", (unsigned)layer);
-  outJsonStr(LAYERS[layer].name);
+  outJsonStr(layerAt(layer).name);
   frameEnd();
 #else
   (void)layer;
+#endif
+}
+
+/* No payload: the editing client already knows what it sent, and any other
+ * client needs the whole table rather than a diff it would have to merge. */
+void protoEventLayoutChanged(void)
+{
+#if FLOW_SERIAL_PROTO
+  eventBegin(PROTO_EV_LAYOUT_CHANGED);
+  frameEnd();
 #endif
 }
 

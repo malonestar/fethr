@@ -155,6 +155,22 @@ class FethrApp:
             log.info("layer switch failed: %s", exc)
         self.tray.refresh()
 
+    def set_sidecar_layout(self, layout: dict[str, Any]) -> dict[str, Any]:
+        """Store the chain builder's canvas and persist it.
+
+        Assigned whole rather than merged through :meth:`apply_settings`: the
+        layout is one document whose keys are whichever modules are plugged in,
+        so there is nothing to patch field by field.  It is normalised on the
+        way in, which means a hand-edited settings.json cannot put the builder
+        into a state it has no way to draw.
+        """
+        from .core.layout import normalise_layout
+
+        clean = normalise_layout(layout)
+        self.settings.sidecar.layout = clean
+        save_settings(self.settings, self.settings_file)
+        return clean
+
     def set_sidecar_enabled(self, enabled: bool) -> None:
         """Flip the sidecar master switch live, from the tray or the UI.
 

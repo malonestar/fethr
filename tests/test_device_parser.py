@@ -153,7 +153,7 @@ def default_responder(command):
     cmd = command.get("cmd")
     if cmd == "hello":
         return [{"ev": "hello", "id": msg_id, "fw": "0.1.0", "proto": 1,
-                 "layers": ["FLOW"], "layer": 0,
+                 "layers": ["FETHR"], "layer": 0,
                  "nodes": [{"id": 1, "type": "key"}]}]
     if cmd == "get_config":
         return [{"ev": "config", "id": msg_id, **DEFAULT_CONFIG}]
@@ -189,7 +189,7 @@ def test_disconnected_device_is_still_usable():
     device = SidecarDevice(port_lister=list)
     snapshot = device.snapshot()
     assert snapshot["connected"] is False
-    assert snapshot["layers"] == ["FLOW"]
+    assert snapshot["layers"] == ["FETHR"]
     assert device.effective_config() == DEFAULT_CONFIG
     with pytest.raises(SidecarError):
         device.identify()
@@ -256,7 +256,7 @@ def test_set_config_mirrors_into_the_local_cache(wired):
 def test_set_layer_validates_against_the_reported_layers(wired):
     """The device ships one layer; asking for a second is a host-side error."""
     device, fake, _ = wired
-    assert device.snapshot()["layers"] == ["FLOW"]
+    assert device.snapshot()["layers"] == ["FETHR"]
     device.set_layer(0)
     with pytest.raises(SidecarError):
         device.set_layer(1)

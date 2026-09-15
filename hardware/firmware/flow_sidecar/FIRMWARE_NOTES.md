@@ -1,4 +1,4 @@
-# fethr Sidecar Firmware 0.1.0 — Build, Flash, Verify
+# fethr Sidecar Firmware 0.2.0 — Build, Flash, Verify
 
 Firmware for the M5Stack **Chain DualKey** (ESP32-S3FN8) acting as a USB-HID
 macro-keyboard sidecar for the fethr dictation app.
@@ -6,22 +6,33 @@ macro-keyboard sidecar for the fethr dictation app.
 > **This file is hand-maintained.** Everything *else* in `firmware/flow_sidecar/` with a
 > `.h` / `.cpp` / `.ino` extension is **generated** — see §0.
 
-> **Version numbering.** 0.1.0 is the first public release and matches the app's
-> version. Sections below still refer to "v2" and "v2.1" where they describe when a
-> feature arrived during development — those were internal numbers for what shipped
-> as 0.1.0, and they are kept because the reasoning is attached to them. **"0.2.0"
-> labels the companion link (§9) and "0.3.0" the key legend and the animations it
-> feeds (§9a)** — work done since that release. `FLOW_SIDECAR_VERSION` is still
-> `0.1.0`; the version moves when an image is cut, not when a feature lands.
+> **Version numbering — read this before the section numbers confuse you.**
+> 0.1.0 was the first public release and matched the app's version.
+> `FLOW_SIDECAR_VERSION` is now **`0.2.0`** (§5c), cut for the runtime layout work.
+>
+> Sections below still refer to "v2" and "v2.1" where they describe when a feature
+> arrived during development — those were internal numbers for what shipped as 0.1.0,
+> and they are kept because the reasoning is attached to them. Confusingly, **the
+> labels "0.2.0" in §9 and "0.3.0" in §9a are *those* internal numbers too** — they
+> mark the companion link and the key legend, both of which shipped inside the 0.1.0
+> image. The firmware version `0.2.0` is a different thing from the "0.2.0" tag on
+> §9. Where a section means the release, it says "the 0.2.0 release".
 
-> **Scope.** The tree — and `bin/fethr-sidecar-0.1.0/` as rebuilt for the key legend —
-> now sets **`FLOW_EXTRA_LAYERS 1`**: all four layers (FLOW, MEDIA, EDIT, MOUSE). The
-> original 0.1.0 image built FLOW alone. MEDIA/EDIT/MOUSE compile and are complete but
-> have had far less time on hardware than FLOW; set the flag back to `0` for the
-> single-layer build. With `LAYER_COUNT == 1` the Chain Key's long hold is inert: no
-> LED flash, no panel scroll, no layer change, and the tap and double-tap still fire on
-> release. Everything that walks the layer table reads `LAYER_COUNT`, so the flag is
-> the whole change.
+> **Scope.** The tree — and `bin/fethr-sidecar-0.2.0/` — sets
+> **`FLOW_EXTRA_LAYERS 4`**: a factory-default device seeds all four layers (FLOW,
+> MEDIA, EDIT, MOUSE).
+>
+> **That flag changed meaning in the 0.2.0 release.** It used to be a boolean
+> (`0` = FLOW only, `1` = build all four); it is now a *count* (`1` or `4`) because
+> the layer table is runtime data and the flag only decides how many defaults get
+> seeded. `layers.cpp` `static_assert`s the range, so the old `0` fails the build
+> rather than producing an empty table — but a stale instruction saying "set it to 1
+> to get all four layers" now does the opposite of what it says.
+>
+> With one layer the Chain Key's long hold is inert: no LED flash, no panel scroll, no
+> layer change, and the tap and double-tap still fire on release. Everything that walks
+> the layer table reads `layerCount()`, which is now a runtime value, so the count can
+> also differ because the device was seeded on an older build.
 
 If you just want to flash the prebuilt image, you do not need this file:
 see [`../../FLASH.md`](../../FLASH.md).
@@ -40,10 +51,12 @@ firmware/
   pio/                          <-- EDIT HERE
     platformio.ini
     include/  config.h  actions.h  glyphs.h  sidecar.h  settings.h  serial_proto.h
-              companion.h
+              companion.h  keynames.h
     src/      main.cpp  chain.cpp  mono.cpp  leds.cpp  layers.cpp  actions.cpp
               glyphs.cpp  settings.cpp  serial_proto.cpp  companion.cpp
+              keynames.cpp
     tools/    sync_ino.ps1      <-- regenerates the sketch folder
+              stage_bin.ps1     <-- copies a built image into hardware/bin/<ver>/
     .gitignore                  <-- .pio/ is a build dir, never commit it
   companion-atoms3r/            <-- the companion display, a SEPARATE project
     platformio.ini                  (AtomS3R + M5Unified; §9)
@@ -78,15 +91,17 @@ puts `include/` on the search path) and under the Arduino IDE (which compiles ev
 | `chain.cpp` | Chain bus: enumeration, one-transaction-per-loop scheduler, node polling, input semantics, chained-node RGB LEDs |
 | `mono.cpp` | Chain Mono panel: priority state machine, rendering, text-scroll sequence |
 | `leds.cpp` | The DualKey's own two WS2812s + battery/VBUS sampling |
-| `layers.cpp` | The layer table (actions as data) + colour/glyph/name maps |
+| `layers.cpp` | The **default** layer table (actions as data), the runtime accessors `layerAt()`/`layerCount()`, and the colour/glyph/name/class maps |
+| **`keynames.cpp`** | **0.2.0** — the proto-2 key-name vocabulary: name ⇄ HID code in three separate number spaces, action-type and modifier names |
 | `actions.cpp` | USB HID dispatch, the deferred-release queue, the USB string descriptors |
 | `glyphs.cpp` | 8×8 bitmaps + the two generated panel views |
 | **`settings.cpp`** | **v2.1** — the mutable `RuntimeConfig`, its defaults, NVS persistence |
 | **`serial_proto.cpp`** | **v2.1** — the host settings protocol *and* the `?` console (one owner for the CDC port) |
 | **`companion.cpp`** | **0.2.0** — the optional companion-display UART link: port selection, TX/RX probe, events out, commands in (§9) |
 | `config.h` | Every tunable: pins, bus, timings, deadzones, layer-table *shape*. Since v2.1 most behavioural constants here are **defaults for `g_cfg`**, tagged as such inline |
-| `settings.h` | `RuntimeConfig` + the NVS blob identity/version |
+| `settings.h` | `RuntimeConfig` (which since 0.2.0 carries the layer table) + the NVS blob identity/version |
 | `serial_proto.h` | Protocol string constants + the module's design contract |
+| `keynames.h` | The key-name vocabulary's contract + the VERIFIED constant list it was built from |
 | `sidecar.h` | The small cross-module API/state surface |
 
 ---
@@ -191,8 +206,13 @@ Applies to `src/` only, so the framework and the libraries keep their own settin
 while our code is held to `-Wall -Wextra` clean. The only warnings in a full build come
 from `M5Chain/src/ChainBuzzer/ChainBuzzer.hpp:155` (`'note_names' defined but not used`) —
 a library header we do not use; ignore it. It appears **once per translation unit that
-includes `M5Chain.h`**, so v2.1 shows six of them (v2.0 showed four); that count going up
-when you add a module is expected and is not a regression.
+includes `M5Chain.h`**, so v2.1 showed six and the companion link made it seven; that
+count going up when you add a module is expected and is not a regression.
+
+0.2.0 added `keynames.cpp` and the count stayed at **seven**, because that module
+includes `config.h` and the USB headers but deliberately **not** `sidecar.h` — it needs
+no Chain API, and not pulling `M5Chain.h` in keeps both the warning count and the
+compile time where they were.
 
 ### Libraries
 
@@ -263,36 +283,47 @@ chain. Node order does not matter — the firmware enumerates and dispatches by 
 
 ## 4. Build record
 
-### 4.0 Current tree = the shipped image (`FLOW_EXTRA_LAYERS 1`, `FLOW_COMPANION 1`)
+### 4.0 Current tree = the shipped image (`FLOW_EXTRA_LAYERS 4`, `FLOW_COMPANION 1`)
 
-Since the key-legend work (§9a) the tree and `bin/fethr-sidecar-0.1.0/` are the same
-build; there is no longer a separate "shipped" configuration to record.
+The tree and `bin/fethr-sidecar-0.2.0/` are the same build; there is no separate
+"shipped" configuration to record.
 
 ```
-RAM:   [==        ]  18.3% (used 59912 bytes from 327680 bytes)
-Flash: [=         ]  13.0% (used 433786 bytes from 3342336 bytes)
+RAM:   [==        ]  19.0% (used 62184 bytes from 327680 bytes)
+Flash: [=         ]  13.2% (used 439666 bytes from 3342336 bytes)
 ```
 
 | Artifact | Bytes | Flash offset |
 |---|---:|---|
-| `firmware.factory.bin` (all of the below, merged) | 509,856 | `0x0` |
+| `firmware.factory.bin` (all of the below, merged) | 515,808 | `0x0` |
 | `bootloader.bin` | 19,968 | `0x0` |
 | `partitions.bin` | 3,072 | `0x8000` |
 | `boot_app0.bin` (from the core's `tools/partitions/`) | 8,192 | `0xE000` |
-| `firmware.bin` | 444,320 | `0x10000` |
+| `firmware.bin` | 450,272 | `0x10000` |
 
 The offsets are the ones PlatformIO printed while merging the factory image, and
-`0x10000 + 444,320 = 509,856` — the merged image is contiguous from 0.
+`0x10000 + 450,272 = 515,808` — the merged image is contiguous from 0.
+`tools/stage_bin.ps1 -Version 0.2.0` is what copies these into `hardware/bin/` and
+writes `SHA256SUMS.txt`.
 
-Cost of the legend work against the previous `FLOW_EXTRA_LAYERS 1` + companion build
-(59,776 B / 432,494 B): **+136 B RAM, +1,292 B flash** — the wider companion output
-buffer, the label/legend tables and the two new event builders.
+Cost of the runtime-layout work against the 0.1.0 image (59,912 B / 433,786 B):
+**+2,272 B RAM, +5,880 B flash**. Where the RAM went, which is worth knowing because
+it is not where you would guess:
 
-Still zero warnings from `src/` under `-Wall -Wextra`. The only warnings in a full
-build are **seven** copies of `M5Chain/src/ChainBuzzer/ChainBuzzer.hpp:155:
-'note_names' defined but not used` — one per translation unit that includes
-`M5Chain.h`, and `companion.cpp` is the seventh. That count rising when you add a
-module is expected and is not a regression.
+| | Bytes |
+|---|---:|
+| `FLOW_PROTO_OUT_BYTES` 1024 → 3072 (the `get_layers` reply) | +2,048 |
+| `RuntimeConfig::layers[4]` — 4 × 50 B | ~200 |
+| `layer_count` + the three new bools, the `actionLabel()` key scratch, padding | ~24 |
+
+So the layer table itself is cheap; the buffer is the cost. `get_layers` serialises
+six actions per layer with a name, a mods array and an fn class each, which lands near
+2.2 KB worst case — see §4a's note on the one message that exceeds 512 bytes, which is
+now two.
+
+Still zero warnings from `src/` under `-Wall -Wextra`, and still **seven** copies of
+`M5Chain/src/ChainBuzzer/ChainBuzzer.hpp:155: 'note_names' defined but not used` — the
+new `keynames.cpp` does not include `M5Chain.h`, so it did not add an eighth.
 
 The companion firmware's own build record is in §9.
 
@@ -302,11 +333,16 @@ The companion firmware's own build record is in §9.
 |---|---:|---:|
 | `FLOW_EXTRA_LAYERS 0`, no companion (the original 0.1.0 image) | 59,288 | 427,890 |
 | `FLOW_EXTRA_LAYERS 1`, no companion | 59,288 | 428,062 |
-| `FLOW_EXTRA_LAYERS 1` + companion link (0.2.0) | 59,776 | 432,494 |
-| `FLOW_EXTRA_LAYERS 1` + companion link + key legend (0.3.0) | 59,912 | 433,786 |
+| `FLOW_EXTRA_LAYERS 1` + companion link (§9) | 59,776 | 432,494 |
+| `FLOW_EXTRA_LAYERS 1` + companion link + key legend (§9a) — the 0.1.0 image | 59,912 | 433,786 |
+| **`FLOW_EXTRA_LAYERS 4` + runtime layout (the 0.2.0 release)** | **62,184** | **439,666** |
+
+(The first four rows use the flag's OLD boolean meaning; `1` there is "all four
+layers". From the 0.2.0 release the flag is a count — see the Scope note at the top.)
 
 So the three extra layers cost **+172 B** flash and no RAM, the companion link
-**+488 B RAM / +4,432 B flash**, and the legend **+136 B / +1,292 B**.
+**+488 B RAM / +4,432 B flash**, the legend **+136 B / +1,292 B**, and the runtime
+layout **+2,272 B / +5,880 B**.
 
 All of them are zero-warning from `src/` under `-Wall -Wextra`. (The first two predate
 `companion.cpp`, hence six `note_names` warnings rather than seven — see §4.0.)
@@ -356,13 +392,19 @@ Inbound lines are capped at `FLOW_PROTO_MAX_LINE` (512 B) and **dropped, not tru
 with one `{"ev":"err","msg":"line too long"}` per dropped line — half a command must never
 parse.
 
-### The one message that exceeds 512 bytes
+### The two messages that exceed 512 bytes
 
-`get_config` serialises the whole config object and lands around **700 bytes**. The
-protocol's 512-byte figure governs what the *device accepts*; the outbound buffer
-(`FLOW_PROTO_OUT_BYTES`, 1 KB) is sized for this reply. If a future field ever pushed it
-past 1 KB the line would be replaced by `{"ev":"err","msg":"reply too large"}` rather than
-emitted malformed — the host never has to resynchronise on a broken line.
+`get_config` serialises the whole config object and lands around **700 bytes**, and
+(0.2.0) `get_layers` serialises the whole keymap and lands near **2.2 KB** worst case —
+four layers × six actions, each carrying a key name, a `mods` array and an `fn` class.
+The protocol's 512-byte figure governs what the *device accepts*; the outbound buffer
+(`FLOW_PROTO_OUT_BYTES`, now 3 KB) is sized for the larger of these. If a future field
+ever pushed one past it the line is replaced by `{"ev":"err","msg":"reply too large"}`
+rather than emitted malformed — the host never has to resynchronise on a broken line.
+
+That is also the argument for `mods` always being present as `[]`: the shape is worth
+more to a host than the ~70 bytes omitting the empty ones would save, and the buffer
+was sized for the full form anyway.
 
 ### Allocation policy
 
@@ -381,7 +423,7 @@ a chatty host would otherwise wear the flash).
 ```
 offset size field
 0      4    magic    = 0x46534331  'F','S','C','1'
-4      2    version  = FLOW_CFG_VERSION      <-- currently 1
+4      2    version  = FLOW_CFG_VERSION      <-- currently 2
 6      2    size     = sizeof(RuntimeConfig)
 8      n    RuntimeConfig, raw
 ```
@@ -390,9 +432,22 @@ A stored blob is accepted only when the byte length, magic, version **and** reco
 `sizeof` all match the running build. Anything else is treated as "no configuration": the
 compile-time defaults win and the stale blob is left alone until the next `save`. So
 adding, removing or reordering a `RuntimeConfig` field, or bumping `FLOW_MAX_LAYERS` /
-`FN_COUNT`, resets cleanly instead of being reinterpreted as garbage. **Bump
-`FLOW_CFG_VERSION` when you change the layout anyway** — the `size` check catches most
-cases but not a same-size field swap.
+`FN_COUNT` / `FLOW_LAYER_NAME_MAX`, resets cleanly instead of being reinterpreted as
+garbage. **Bump `FLOW_CFG_VERSION` when you change the layout anyway** — the `size`
+check catches most cases but not a same-size field swap.
+
+**Version 2 (the 0.2.0 release)** put the whole layer table in the blob:
+`LayerRuntime layers[FLOW_MAX_LAYERS]` plus `layer_count`, and the three new booleans
+`swap_keys` / `nav_swap_xy` / `scroll_swap_xy`. A v1 blob is therefore rejected and a
+device upgraded from 0.1.0 comes up on factory defaults exactly once. That is the
+intended outcome rather than a migration gap: a v1 blob has no keymap to carry forward,
+and the app holds the user's colour preferences anyway.
+
+`LayerRuntime` is why `LayerConfig`'s `const char *name` could not simply move into
+`RuntimeConfig` — the blob is `memcpy`'d, so it must stay trivially copyable and hold
+no pointers. The runtime struct carries `char name[FLOW_LAYER_NAME_MAX + 1]` instead,
+and the colour is deliberately *not* duplicated: it stays in `layer_rgb[]`, which
+`set layer_rgb.N` already edited and `set_layer_meta`'s `rgb` now writes too.
 
 ### Applying a change without breaking the scheduler
 
@@ -478,11 +533,12 @@ VID + product string.
 
 Everything from v1 still behaves identically. New:
 
-> Several subsections here describe the MEDIA/EDIT/MOUSE layers, which 0.1.0 does
-> not build (`FLOW_EXTRA_LAYERS 0`). They are kept because they document code that
-> is still in the tree and one flag away.
+> Several subsections here describe the MEDIA/EDIT/MOUSE layers, which the original
+> 0.1.0 image did not build. They are **seeded by default** now
+> (`FLOW_EXTRA_LAYERS 4`), and what they describe is the *default* binding of each
+> control — since the 0.2.0 release any of it can be rebound at run time.
 
-### MOUSE layer (4th layer, glyph **P**, magenta) — behind `FLOW_EXTRA_LAYERS`
+### MOUSE layer (4th layer, glyph **P**, magenta) — a default, not a build option
 
 | Control | Action |
 |---|---|
@@ -583,11 +639,13 @@ layer change never happens and this path only runs for `identify` and `mono`.
 
 ### Serial
 
-Boot banner `[flow-sidecar] v0.1.0 boot - 1 layers, proto 1, '?' for status`, and a
+Boot banner `[flow-sidecar] v0.2.0 boot - 4 layers, proto 2, '?' for status`, and a
 non-blocking one-character console: **`?`** (or `s`) prints firmware version, current
 layer, chain readiness, the enumerated device list with type codes, role assignment, angle
 detent, battery and VBUS millivolts, hold state, whether the config came from NVS or the
-defaults, and (0.1.0) whether a host is attached plus the last state it pushed.
+defaults, (0.1.0) whether a host is attached plus the last state it pushed, and (0.2.0)
+a `keys` line with the two GPIOs actually being scanned and the three orientation flags —
+which is the quickest way to tell a `swap_keys` that did not take from one that did.
 
 ---
 
@@ -617,13 +675,88 @@ compile-time data in `layers.cpp`; the protocol edits appearance and feel, not t
 | Area | Change |
 |---|---|
 | **Scope** | `FLOW_EXTRA_LAYERS 0`: the FLOW layer only. `LAYER_COUNT == 1`, so the Chain Key's long hold is inert — no flash, no scroll, no `g_ck_consumed`, and the tap still fires on release. Set the flag to 1 to get the other three back. |
-| **Version** | `FLOW_SIDECAR_VERSION "0.1.0"`, matching the app. The USB product string is unchanged (`fethr sidecar`) and so is the protocol revision (`proto: 1`) — nothing on the wire broke. |
+| **Version** | `FLOW_SIDECAR_VERSION "0.1.0"`, matching the app. The USB product string is unchanged (`fethr sidecar`) and so was the protocol revision (`proto: 1`) — nothing on the wire broke. (The 0.2.0 release moved both the version and `proto` to 2; see §5c.) |
 | **`state` command** | The host pushes its engine state; the device renders it. Spinner + amber breathe while working, ✓ + green flash on `pasted`, ✗ + two red flashes on `error`. §4a. |
 | **Checkmark semantics** | ✓ now means "the text landed", not "you let go". With no host attached the old release-time ✓ is restored. §4a. |
 | **New glyphs** | `G_CROSS` (a static bitmap) and `glyphSpinnerFrame()` (generated, like the volume bar and the scroll animation). |
 
 The `state` command is additive: a host that never sends one gets exactly the v2.1
 behaviour, because `hostPresent()` stays false and the release-time checkmark stays.
+
+---
+
+## 5c. What the 0.2.0 release adds — the runtime layout
+
+v2.1's summary ended "what v2.1 deliberately does **not** do: change any binding.
+Which key fires what is still compile-time data in `layers.cpp`." **That is the line
+this release crosses.**
+
+| Area | Change |
+|---|---|
+| **Runtime layer table** | `RuntimeConfig::layers[]` + `layer_count`. `layers.cpp`'s table is now `DEFAULT_LAYERS` — the seed, not the source of truth. Every reader goes through `layerAt()` / `layerCount()`. |
+| **`get_layers`** | The whole table: per layer the name, colour, the three stick/knob modes and all six action slots. |
+| **`set_action`** | Rebind one slot on one layer, live. |
+| **`set_layer_meta`** | Rename / recolour a layer and change `nav_mode` / `scroll_mode` / `angle_mode`. Any subset of fields. |
+| **Key names** | `keynames.cpp` — the protocol's vocabulary ⇄ HID codes, in three separate number spaces scoped by action type. |
+| **`swap_keys`** | The old `KEYS_SWAPPED` compile flag as a live setting. The flag is **gone**. |
+| **`nav_swap_xy` / `scroll_swap_xy`** | Swap a stick's axes before the sign multiply. |
+| **`layout_changed` event** | Emitted after any layout edit, so a second client re-reads. |
+| **`proto: 2`**, `FLOW_CFG_VERSION 2` | See §4a. |
+
+### Why one accessor and not a global `LAYERS[]`
+
+`layerAt()` clamps an out-of-range index to layer 0 rather than asserting. That is
+what lets ~40 call sites pass `g_layer` with no bounds check of their own, and it is
+also why `g_cfg` being zero-initialised before `settingsBegin()` runs is harmless —
+index 0 is always inside the array, it is merely blank. `layerCount()` returning 0 at
+that moment is likewise safe: `cycleLayer()` guards the modulo.
+
+### Why a rebind cannot strand a key
+
+`scanLocalKeys()` copies the `Action` into `g_key[].hold_action` on the **press** edge
+and releases from that copy, and `chain.cpp` captures the Chain Key's pending single
+tap the same way. That was originally there so a *layer change* mid-hold could not
+leave F8 down on the host; it turns out to be exactly the property `set_action` needs,
+so the gesture in flight finishes with the binding it started with and no extra
+machinery was required. It is worth not "tidying" that copy away.
+
+### Why `swap_keys` is more than a variable
+
+`keysApplySwap()` (`main.cpp`) re-assigns the two GPIOs, and is called from
+`settingsApplyAll()` after **every** `set`. Two properties make that safe:
+
+* it returns immediately when the assignment already matches, so an unrelated colour
+  change during a dictation hold does nothing to the keys;
+* when it does swap it calls `releaseAllHolds()` first, then seeds `raw`/`stable` from
+  the pins' *current* levels rather than from `false` — otherwise swapping while a
+  button happened to be down would synthesise a press edge on the other one.
+
+The LED follows the finger: `ledForKey()` flips `led_index_key1` when `swap_keys` is
+set, which is precisely what the old `#if KEYS_SWAPPED` block did to `LED_INDEX_KEY1`
+at compile time. The two settings compose, so a board with both wrong is still fixable.
+
+### Why `mods` is not its own action type on the wire
+
+The firmware has `ACT_CHORD_TAP`; the protocol does not. `key_tap` with a non-empty
+`mods` **is** the chord, and `keyNameToAction()` upgrades the type on the way in while
+`actionTypeName()` reports `ACT_CHORD_TAP` as `key_tap` on the way out. Round-tripping
+`get_layers` → `set_action` is therefore lossless without the host ever learning a
+seventh type name.
+
+### Two spellings of `fn`
+
+`fn_rgb`'s keys and the `hold` event's `fn` stay upper-case (`DICT_RAW`); the proto-2
+class in `get_layers`/`set_action` is lower-case (`dict_raw`) and adds `custom` for
+FN_NONE. Both are the same `FnId`; `fnName()`/`fnByName()` serve the first,
+`fnClassName()`/`fnClassByName()` the second, and the latter is case-insensitive so a
+host that sends the upper-case spelling is understood. Renaming either would break a
+shipped host, which is why both exist rather than one being migrated.
+
+`custom` on a bound action makes `actionLabel()` return the **key name**, so the
+companion's legend shows `K1: f13` rather than `K1: -`. That is the one place
+`actionLabel()` returns a built string rather than a literal; it lands in a file-static
+scratch buffer, which is safe only because every caller formats the result into its own
+storage before the next call. Do not start caching an `actionLabel()` pointer.
 
 ---
 
@@ -649,6 +782,11 @@ Everything under "verified" was read from the raw upstream source — for v2, fr
 | `USBHIDConsumerControl` | `void begin()`, `size_t press(uint16_t)`, `size_t release()` — `release()` takes **no argument**, so only one usage can be held at a time | `USBHIDConsumerControl.h` |
 | `CONSUMER_CONTROL_VOLUME_INCREMENT` / `_DECREMENT` / `_MUTE` | `0x00E9` / `0x00EA` / `0x00E2` | `USBHIDConsumerControl.h` |
 | `CONSUMER_CONTROL_PLAY_PAUSE` / `_SCAN_NEXT` / `_SCAN_PREVIOUS` | `0x00CD` / `0x00B5` / `0x00B6` | `USBHIDConsumerControl.h` |
+| **(0.2.0) `KEY_RETURN` / `KEY_ESC` / `KEY_BACKSPACE` / `KEY_TAB` / `KEY_SPACE`** | `0xB0` / `0xB1` / `0xB2` / `0xB3` / **`0x20`** — `space` is the plain ASCII byte, which is why `keynames.cpp` looks the named table up *before* the ASCII path | `USBHIDKeyboard.h` |
+| **(0.2.0) `KEY_INSERT` / `KEY_HOME` / `KEY_PAGE_UP` / `KEY_DELETE` / `KEY_END` / `KEY_PAGE_DOWN`** | `0xD1` / `0xD2` / `0xD3` / `0xD4` / `0xD5` / `0xD6`. Note the header spells them `PAGE_UP`/`PAGE_DOWN` while the protocol vocabulary is `pageup`/`pagedown` | `USBHIDKeyboard.h` |
+| **(0.2.0) `KEY_CAPS_LOCK` / `KEY_PRINT_SCREEN`** | `0xC1` / `0xCE` | `USBHIDKeyboard.h` |
+| **(0.2.0) F-key block** | `KEY_F1..KEY_F12` = `0xC2..0xCD` but `KEY_F13..KEY_F24` = **`0xF0..0xFB`** — two runs, not one, so neither `f<n>` direction can be a single subtraction | `USBHIDKeyboard.h` |
+| **(0.2.0) `CONSUMER_CONTROL_STOP` / `_BRIGHTNESS_INCREMENT` / `_BRIGHTNESS_DECREMENT`** | `0x00B7` / `0x006F` / `0x0070` | `USBHIDConsumerControl.h` |
 | `USB.begin()` | called last, after every HID device's `begin()` | vendor `Chain_DualKey_Arduino_USB_HID.md` |
 | `ARDUINO_USB_MODE` / `ARDUINO_USB_CDC_ON_BOOT` | compile-time defines, **not** runtime calls; `0` / `1` here | core `USB.cpp`, board `boards.txt` |
 | **`ESPUSB::productName`** (v2.1) | `bool productName(const char *name)` — stores into a `String` member; the body is `if (!_started) {...} return !_started;`, so it is a **no-op after `USB.begin()`** | `cores/esp32/USB.h:80`, `USB.cpp` |
@@ -739,7 +877,7 @@ mode, #7 whether `setMonoBufferRefresh` exists) are resolved.
 | 1 | ~~USB Mode / USB CDC On Boot board menu~~ **RESOLVED** under PlatformIO: `build_flags` are the setting; `USBHIDKeyboard` compiled, so TinyUSB mode is active. Only still open if you build in the Arduino IDE. | — |
 | 2 | Left Chain port pin direction — ESPHome says TX=G48/RX=G47, the wiki PinMap says the opposite. **They contradict each other.** | Left port is unused. `CHAIN_LEFT_RX_PIN`/`_TX_PIN` follow ESPHome and are reference-only. |
 | 3 | Which NeoPixel index (0 or 1) is physically under Key1 vs Key2 | **(v2.1)** No reflash needed: `{"cmd":"set","path":"led_index_key1","value":1}` then `save`. `LED_INDEX_KEY1` in `config.h` is now just its default. |
-| 4 | Joystick axis polarity | **(v2.1)** `set nav_x_sign` / `nav_y_sign` / `scroll_x_sign` / `scroll_y_sign` to `-1`, then `save`. The `config.h` signs are the defaults. |
+| 4 | Joystick axis polarity | **(v2.1)** `set nav_x_sign` / `nav_y_sign` / `scroll_x_sign` / `scroll_y_sign` to `-1`, then `save`. The `config.h` signs are the defaults. **(0.2.0)** `set nav_swap_xy` / `scroll_swap_xy` to `true` covers a stick mounted at 90°, which the signs alone could not reach. |
 | 4b | **(v2)** Cursor Y direction on the MOUSE layer: HID Y grows *downward*, so stick-up must emit a negative dy | `MOUSE_Y_SIGN` (`-1`) is the fixed coordinate-space conversion and stays compile-time. If the cursor is inverted *after* that, `set mouse_y_sign -1` — the two multiply. |
 | 5 | Whether the HY2.0-4P 5 V rail is gated by any GPIO | Assumed always on. If **nothing** enumerates on a known-good chain, suspect this first. |
 | 6 | WS2812 colour order (`NEO_GRB` comes from the vendor LED example, not a datasheet) | If red/green look swapped, change `NEO_GRB` to `NEO_RGB` in `leds.cpp`. |
@@ -761,6 +899,11 @@ mode, #7 whether `setMonoBufferRefresh` exists) are resolved.
 | 14h | **(0.3.0)** Whether ~30 fps of full 128×128×2 sprite blits over SPI is comfortable. The mic pulse is the busiest frame | Arithmetic says yes; unmeasured. `UI_FRAME_MS` in `companion_proto.h` is the single knob, and raising it degrades smoothness rather than correctness — every animation derives its phase from the bucket. |
 | 14i | **(0.3.0)** Whether the animation *durations* (700 ms mic pulse, 250 ms layer wipe, 150 ms tap flash, 800 ms knob bar) read as deliberate rather than twitchy | All four are `#define`s at the top of `companion_proto.h`. Nothing else depends on their values; `UI_REC_FRAMES` and `UI_WIPE_FRAMES` are derived so a duration cannot desynchronise from its own animation. |
 | 14j | **(0.3.0)** Whether a tap's 150 ms row flash is even perceptible next to the existing LED flash and Mono overlay, or whether three simultaneous feedbacks are one too many | Cosmetic either way. Removing it is deleting the `tap_row` branch in `drawLegend()`; the `tap` event itself is also what the icons need. |
+| 15 | **(0.2.0 release) The whole runtime layout, on hardware.** `get_layers` / `set_action` / `set_layer_meta` compile and the shapes match PROTOCOL.md, but nothing has been exercised against a real device — no reply has been seen on a wire | Additive: a host that never sends the three new commands gets exactly 0.1.0's behaviour. The first thing to check is that `get_layers` arrives as ONE line and is not cut short by `{"ev":"err","msg":"reply too large"}`, which is what a buffer that turned out too small looks like. |
+| 15a | **(0.2.0 release)** Whether `swap_keys` really is glitch-free when flipped **while a key is held**. The release-then-reseed path is coded and reasoned about; it has not been done with a finger on the button | Worst case is a dropped keystroke, not a stuck one: `releaseAllHolds()` runs before the pins move. If it misbehaves, do the swap from the app's settings page rather than mid-dictation. |
+| 15b | **(0.2.0 release)** Whether the ASCII key path produces the right character on a **non-US** host layout. `a`..`z`, digits and the eleven punctuation marks are handed to the core's `_asciimap`, which is `KeyboardLayout_en_US` unless `Keyboard.begin()` is given another | Only affects keys the *user* binds; nothing in the defaults uses punctuation except `z`/`y`, which are the same on most Latin layouts. The fix, if it matters, is a layout setting passed to `Keyboard.begin()` in `actionsBegin()`. |
+| 15c | **(0.2.0 release)** Whether an 8-character layer name is legible on the Mono panel's name scroll and in the companion's layer label. The limit is the protocol's, chosen for the blob, not measured on glass | `MONO_TEXT_SCROLL_PX_PER_CHAR` already derives the scroll window from the length, so a long name scrolls longer rather than being cut. The companion label is `textWidth()`-measured at draw time. |
+| 15d | **(0.2.0 release)** A renamed layer keeps its seeded Mono glyph (`FLOW` → `F` even after it is renamed `MACROS`) | Deliberate, not an oversight: there is no letter-glyph generator, only the hand-drawn `G_F`/`G_M`/`G_E`/`G_P`. Adding one is a `glyphs.cpp` change plus a `glyph` field on `set_layer_meta`; PROTOCOL.md records the omission. |
 
 ---
 
@@ -771,8 +914,8 @@ Plug in with the side switch in the **middle** position, *not* holding Key1.
 **1. Serial** (`pio device monitor`). Expect within a second of boot:
 
 ```
-[flow-sidecar] v0.1.0 boot - 4 layers, proto 1, '?' for status
-{"ev":"boot","fw":"0.1.0"}
+[flow-sidecar] v0.2.0 boot - 4 layers, proto 2, '?' for status
+{"ev":"boot","fw":"0.2.0"}
 [chain] id=1 type=0x0003        <- Chain Key
 [chain] id=2 type=0x0004        <- Chain Joystick
 [chain] id=3 type=0x0004        <- Chain Joystick
@@ -801,7 +944,7 @@ gets the "letter for one second, then blank" behaviour back.
 type commands by hand). Each of these must produce exactly one reply line:
 
 ```
-{"cmd":"hello","id":1}          -> {"ev":"hello","id":1,"fw":"0.1.0","proto":1,
+{"cmd":"hello","id":1}          -> {"ev":"hello","id":1,"fw":"0.2.0","proto":2,
                                     "layers":["FLOW","MEDIA","EDIT","MOUSE"],...}
 {"cmd":"status"}                -> {"ev":"status","layer":0,"vbat_mv":...,"usb_mv":...}
 {"cmd":"get_config"}            -> {"ev":"config",...}          (~700 bytes, one line)
@@ -812,13 +955,54 @@ type commands by hand). Each of these must produce exactly one reply line:
 {"cmd":"state","value":"error"}        -> {"ev":"ok"} + Mono cross 900 ms, two red flashes
 {"cmd":"state","value":"idle"}         -> {"ev":"ok"} + back to normal
 {"cmd":"state","value":"busy"}         -> {"ev":"err","msg":"unknown state"}
-{"cmd":"layer","index":1}       -> {"ev":"ok"} + a `layer` event  (MEDIA; `err` with
-                                    `FLOW_EXTRA_LAYERS 0`, where only index 0 exists)
+{"cmd":"layer","index":1}       -> {"ev":"ok"} + a `layer` event  (MEDIA; `err` on a
+                                    device seeded with one layer, where only 0 exists)
 {"cmd":"set","path":"led_idle_pct","value":60}   -> {"ev":"ok","path":"led_idle_pct"}
 {"cmd":"set","path":"led_idle_pct","value":600}  -> {"ev":"err","msg":"expected 0..100"}
 {"cmd":"set","path":"nope","value":1}            -> {"ev":"err","msg":"unknown path"}
 {"cmd":"nope"}                                   -> {"ev":"err","msg":"unknown cmd"}
 ```
+
+**3c. The runtime layout** (0.2.0). Same terminal. `get_layers` is the big one — it
+must arrive as **one** line of roughly 2 KB, not as
+`{"ev":"err","msg":"reply too large"}`:
+
+```
+{"cmd":"get_layers","id":9}
+  -> {"ev":"layers","id":9,"layers":[
+       {"index":0,"name":"FLOW","rgb":[0,90,255],"nav_mode":"arrows",
+        "scroll_mode":"wheel_pan","angle_mode":"volume","actions":{
+          "key1":{"type":"key_hold","key":"f8","mods":[],"fn":"dict_raw"},
+          "key2":{"type":"key_hold","key":"f9","mods":[],"fn":"dict_clean"},
+          "chain_key":{"type":"key_tap","key":"f7","mods":[],"fn":"repaste"},
+          "chain_key_double":{"type":"key_tap","key":"z","mods":["ctrl"],"fn":"undo"},
+          "nav_click":{"type":"key_tap","key":"enter","mods":[],"fn":"enter"},
+          "scroll_click":{"type":"mouse_btn","key":"middle","mods":[],"fn":"mouse_m"}}},
+       ... three more ...]}
+
+{"cmd":"set_action","layer":0,"slot":"key2",
+ "action":{"type":"key_tap","key":"c","mods":["ctrl"],"fn":"custom"}}
+  -> {"ev":"ok"}  + {"ev":"layout_changed"}   (Key2's LED leaves violet; the
+                                               companion legend reads "K2: c")
+{"cmd":"set_action","layer":0,"slot":"key2","action":{"type":"key_tap","key":"nope"}}
+  -> {"ev":"err","msg":"unknown key"}          (and nothing changed)
+{"cmd":"set_action","layer":0,"slot":"nope","action":{"type":"none"}}
+  -> {"ev":"err","msg":"unknown slot"}
+{"cmd":"set_layer_meta","layer":1,"name":"MACROS","rgb":[255,0,0]}
+  -> {"ev":"ok"}  + {"ev":"layout_changed"}    (hello now reports "MACROS"; the Mono
+                                                glyph stays M - see UNVERIFIED 15d)
+{"cmd":"set_layer_meta","layer":1,"name":"WAY_TOO_LONG"}
+  -> {"ev":"err","msg":"name must be 1..8 chars"}
+{"cmd":"set","path":"swap_keys","value":true}
+  -> {"ev":"ok","path":"swap_keys"}            (the two buttons AND their LEDs trade
+                                                places immediately, no reboot)
+{"cmd":"set","path":"nav_swap_xy","value":true}
+  -> {"ev":"ok","path":"nav_swap_xy"}          (nav stick left/right now moves up/down)
+```
+
+Then `{"cmd":"save"}`, unplug/replug, and `get_layers` again: the rebinding must
+survive. That is the NVS round trip for the layer table specifically, and it is the
+half of persistence that version 2 of the blob exists for.
 
 Note that sending any `state` (or `hello`) starts a 60-second "a host is attached"
 window, during which releasing a dictation key no longer shows its own checkmark —
@@ -842,7 +1026,7 @@ the first-byte-of-the-line rule doing its job.
 | Kill the ASR server and hold Key1 | Mono **✗** for 900 ms, two red flashes. |
 | Tap the Chain Key once, then wait | ~350 ms later: both DualKey LEDs flash, host re-pastes (F7). The delay is intentional — §5. |
 | Tap the Chain Key **twice** quickly | Ctrl+Z instead of a second paste. |
-| **Hold the Chain Key ≥ 1 s** | Cycles FLOW → MEDIA → EDIT → MOUSE: the node LED turns the next layer's colour after ~200 ms, both DualKey LEDs flash it ×2 at 1 s, and the panel scrolls the name then shows its letter. Rebuilt with `FLOW_EXTRA_LAYERS 0` the hold does **nothing at all** and the normal tap (or double-tap) fires on release. |
+| **Hold the Chain Key ≥ 1 s** | Cycles FLOW → MEDIA → EDIT → MOUSE: the node LED turns the next layer's colour after ~200 ms, both DualKey LEDs flash it ×2 at 1 s, and the panel scrolls the name then shows its letter. On a device seeded with one layer (`FLOW_EXTRA_LAYERS 1`) the hold does **nothing at all** and the normal tap (or double-tap) fires on release. |
 | Nav stick | Caret moves; Mono shows an **arrow** in that direction while held; hold → one move, ~300 ms pause, then ~20 moves/s. |
 | Nav stick click | Newline (Enter). |
 | Scroll stick fore/aft | Page scrolls, faster further from centre; Mono runs the **two-bar scroll animation**. |
@@ -850,11 +1034,10 @@ the first-byte-of-the-line rule doing its job.
 | Scroll stick click | Middle click. |
 | Turn the Angle knob | Volume steps; Mono shows the **volume bar** for 600 ms; the Angle node's LED hue shifts green→red. |
 
-Rebuilt with `FLOW_EXTRA_LAYERS 1`, a ≥1 s Chain Key hold cycles FLOW → MEDIA → EDIT
-→ MOUSE instead: the node LED turns the next layer's colour after ~200 ms, both
-DualKey LEDs flash it ×2 at 1 s, and the panel scrolls the name then shows its
-letter. Those three layers have never run on hardware — that is why they are behind
-the flag.
+MEDIA/EDIT/MOUSE have had far less time on hardware than FLOW. They are seeded by
+default now rather than hidden behind a flag, and since the 0.2.0 release anything
+about them — name, colour, every binding, what the stick and knob do — can be changed
+from the app without a reflash.
 
 **5. Hot-plug.** Unplug a node mid-chain and reconnect it. Within a couple of seconds the
 log should show `[chain] hot-plug detected` (or the 5-consecutive-failure path) followed by
@@ -922,10 +1105,14 @@ the one-transaction-per-loop scheduler.
 19. **(0.1.0) The 60-second host window is a heuristic.** Quitting the app does not
     tell the device anything, so for up to a minute afterwards a key release still
     shows no checkmark. It costs one missing glyph on one dictation.
-20. ~~**(0.1.0) One layer.**~~ **No longer true of the shipped image**: the key-legend
-    rebuild sets `FLOW_EXTRA_LAYERS 1` and `bin/fethr-sidecar-0.1.0/` builds all four.
-    The flag still exists and still works; MEDIA/EDIT/MOUSE remain the least-exercised
-    part of this firmware.
+20. ~~**(0.1.0) One layer.**~~ **No longer true of the shipped image**: all four are
+    seeded (`FLOW_EXTRA_LAYERS 4`). MEDIA/EDIT/MOUSE remain the least-exercised part of
+    this firmware.
+20a. **(0.2.0 release) The layer COUNT is still fixed.** `set_action` and
+    `set_layer_meta` can change everything about a layer, but not how many there are:
+    `FLOW_MAX_LAYERS` sizes the NVS blob and `FLOW_EXTRA_LAYERS` decides the seed. Adding
+    a fifth layer is a blob-version bump, not a host command, and the wire format has no
+    add/remove verb by design.
 21. **(0.2.0) The companion link has no reply channel.** Commands from the companion
     get no `ok`/`err`; a rejected one is silently dropped. It is a display, not a
     settings client, and its only real feedback is the `layer` event a successful
@@ -1091,8 +1278,14 @@ is what a reader of the firmware needs that those do not say.
 
 The companion's resting screen is a per-layer key legend, and every string on it is
 built in **`layerLegend()` in `layers.cpp`** — beside `fnColor()` and `fnGlyph()`, from
-the same `LAYERS[]` rows the keys actually fire from — and shipped as a `legend` array
-on `hello` and on every `layer` event.
+the same rows the keys actually fire from — and shipped as a `legend` array on `hello`
+and on every `layer` event.
+
+Since the 0.2.0 release those rows are the **runtime** table, reached through
+`layerAt()`, and `set_action`/`set_layer_meta` re-emit the `layer` event. So the
+anti-drift argument below is no longer only about a careless edit to a source file: a
+key rebound from the app updates the companion's screen in the same breath, with no
+code path that could forget to.
 
 The companion holds **no** table of bindings. That is the entire point: a screen that
 kept its own copy would be one edit away from confidently lying about what a key does,

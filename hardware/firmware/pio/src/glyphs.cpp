@@ -82,19 +82,47 @@ static const uint8_t GLYPH_HOLD[8] = {0x00, 0x00, 0x18, 0x3C, 0x3C, 0x18, 0x00, 
  */
 static const uint8_t GLYPH_POINTER[8] = {0x80, 0xC0, 0xE0, 0xF0, 0xF8, 0xE0, 0xB0, 0x18};
 
-/* Layer letters, 5x7 cell drawn at X1..X5 / rows 0..6. */
+/* Layer icons (the enum ids kept their letter names; the bitmaps are icons
+ * now - the layer NAME scrolls first, then the icon stays as the idle view). */
 
-/* F - layer FLOW */
-static const uint8_t GLYPH_F[8] = {0x7C, 0x40, 0x40, 0x78, 0x40, 0x40, 0x40, 0x00};
+/* Feather - layer FETHR (same silhouette as the app's tray mark)
+ *   .....##.
+ *   ....###.
+ *   ...####.
+ *   ...####.
+ *   ..####..
+ *   ..###...
+ *   .##.....
+ *   #.......
+ */
+static const uint8_t GLYPH_F[8] = {0x06, 0x0E, 0x1E, 0x1E, 0x3C, 0x38, 0x60, 0x80};
 
-/* M - layer MEDIA */
-static const uint8_t GLYPH_M[8] = {0x44, 0x6C, 0x54, 0x54, 0x44, 0x44, 0x44, 0x00};
+/* Eighth note - layer MEDIA
+ *   ...####.
+ *   ...#..#.
+ *   ...#....
+ *   ...#....
+ *   ...#....
+ *   .###....
+ *   ####....
+ *   .##.....
+ */
+static const uint8_t GLYPH_M[8] = {0x1E, 0x12, 0x10, 0x10, 0x10, 0x70, 0xF0, 0x60};
 
-/* E - layer EDIT */
-static const uint8_t GLYPH_E[8] = {0x7C, 0x40, 0x40, 0x78, 0x40, 0x40, 0x7C, 0x00};
+/* Pencil - layer EDIT
+ *   ......##
+ *   .....#.#
+ *   ....#.#.
+ *   ...#.#..
+ *   ..#.#...
+ *   .#.#....
+ *   ##......
+ *   #.......
+ */
+static const uint8_t GLYPH_E[8] = {0x03, 0x05, 0x0A, 0x14, 0x28, 0x50, 0xC0, 0x80};
 
-/* P - layer MOUSE (P for pointer) */
-static const uint8_t GLYPH_P[8] = {0x78, 0x44, 0x44, 0x78, 0x40, 0x40, 0x40, 0x00};
+/* Cursor arrow - layer MOUSE (same bitmap as the mouse-hold pointer) */
+static const uint8_t GLYPH_P[8] = {0x80, 0xC0, 0xE0, 0xF0, 0xF8, 0xE0, 0xB0, 0x18};
 
 /* Direction arrows - shown only while the nav stick is actually deflected. */
 static const uint8_t GLYPH_ARROW_UP[8]    = {0x18, 0x3C, 0x7E, 0xFF, 0x18, 0x18, 0x18, 0x18};

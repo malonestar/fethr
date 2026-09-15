@@ -351,7 +351,7 @@ static void navAxes(int16_t x, int16_t y, uint32_t now)
   int16_t ay = iabs16(y);
   g_nav_mag  = (ax > ay) ? ax : ay;
 
-  uint8_t mode = LAYERS[g_layer].nav_mode;
+  uint8_t mode = layerAt(g_layer).nav_mode;
 
   if (mode == NAV_MOUSE) {
     navMouse(x, y, now);
@@ -401,7 +401,7 @@ static void scrollAxes(int16_t x, int16_t y, uint32_t now)
   int16_t ay    = iabs16(y);
   g_scroll_mag  = (ax > ay) ? ax : ay;
 
-  uint8_t mode = LAYERS[g_layer].scroll_mode;
+  uint8_t mode = layerAt(g_layer).scroll_mode;
   if (mode == SCROLL_OFF) {
     g_scroll_x_dir = DIR_NONE;
     return;
@@ -474,7 +474,7 @@ static void angleUpdate(uint16_t adc, uint32_t now)
     return;
   }
 
-  if (LAYERS[g_layer].angle_mode == ANGLE_OFF) {
+  if (layerAt(g_layer).angle_mode == ANGLE_OFF) {
     /* The knob still MOVED, and the companion draws its position bar whatever
      * the layer does with it - a knob that turns and shows nothing reads as a
      * broken screen rather than as an unbound control. */
@@ -493,7 +493,7 @@ static void angleUpdate(uint16_t adc, uint32_t now)
   g_angle_detent = d;
   companionEventKnob((uint8_t)g_angle_detent);
 
-  if (LAYERS[g_layer].angle_mode == ANGLE_VOLUME) {
+  if (layerAt(g_layer).angle_mode == ANGLE_VOLUME) {
     /* 0..8 filled columns, so a knob at the very bottom still shows an (empty)
      * bar rather than looking like the panel went blank. */
     uint8_t level = (uint8_t)(((uint32_t)(g_angle_detent + 1) * 8UL) / ANGLE_DETENTS);
@@ -516,7 +516,7 @@ static void angleTick(uint32_t now)
   int8_t dir    = (g_angle_queue > 0) ? 1 : -1;
   g_angle_queue = (int8_t)(g_angle_queue - dir);
 
-  switch (LAYERS[g_layer].angle_mode) {
+  switch (layerAt(g_layer).angle_mode) {
     case ANGLE_VOLUME:
       tapConsumer((dir > 0) ? CONSUMER_CONTROL_VOLUME_INCREMENT
                             : CONSUMER_CONTROL_VOLUME_DECREMENT,
@@ -567,9 +567,9 @@ static void chainKeyUpdate(bool down, uint32_t now)
   if (down && g_ck_down) {
     /* One layer = nothing to cycle to, so the long hold is INERT: no LED
      * flash, no panel scroll, and g_ck_consumed stays false so the tap and
-     * double-tap still fire on release. (LAYER_COUNT is a link-time constant
-     * from layers.cpp, so this is one compare, not a build variant.) */
-    if (LAYER_COUNT > 1 && !g_ck_consumed && (now - g_ck_press_ms) >= g_cfg.layer_hold_ms) {
+     * double-tap still fire on release. (Since 0.2.0 layerCount() is a runtime
+     * value, so this is a live compare rather than a build variant.) */
+    if (layerCount() > 1 && !g_ck_consumed && (now - g_ck_press_ms) >= g_cfg.layer_hold_ms) {
       g_ck_consumed       = true; /* suppress the tap action on release */
       g_ck_single_pending = false;
       g_ck_double_armed   = false;
@@ -584,22 +584,22 @@ static void chainKeyUpdate(bool down, uint32_t now)
 
     if (g_ck_double_armed) {
       g_ck_double_armed = false;
-      chainKeyFire(LAYERS[g_layer].chain_key_double, now, "chain2");
+      chainKeyFire(layerAt(g_layer).chain_key_double, now, "chain2");
       return;
     }
 
     /* With double-tap disabled there is nothing to wait for, so the single
      * fires instantly - that is the whole latency saving g_cfg.double_tap
      * buys, and why it is worth exposing to the host. */
-    const Action &dbl = LAYERS[g_layer].chain_key_double;
+    const Action &dbl = layerAt(g_layer).chain_key_double;
     if (!g_cfg.double_tap || dbl.type == ACT_NONE) {
-      chainKeyFire(LAYERS[g_layer].chain_key, now, "chain");
+      chainKeyFire(layerAt(g_layer).chain_key, now, "chain");
       return;
     }
 
-    /* Capture the action now, so a layer change during the window cannot
-     * retarget a tap the user already made. */
-    g_ck_single_action  = LAYERS[g_layer].chain_key;
+    /* Capture the action now, so a layer change - or a set_action - during the
+     * window cannot retarget a tap the user already made. */
+    g_ck_single_action  = layerAt(g_layer).chain_key;
     g_ck_single_at      = now + g_cfg.double_tap_ms;
     g_ck_single_pending = true;
   }
@@ -632,8 +632,17 @@ static bool pollNavStick(uint32_t now)
   chain_status_t st =
       M5Chain.getJoystickMappedInt16Value(g_nav_id, &x, &y, CHAIN_CALL_TIMEOUT_MS);
   chainResult(st);
-  if (st == CHAIN_OK)
+  if (st == CHAIN_OK) {
+    /* The swap comes BEFORE the signs: swap then negate covers all four
+     * 90-degree mountings, whereas negating first and swapping after would
+     * reach only two of them. */
+    if (g_cfg.nav_swap_xy) {
+      int16_t t = x;
+      x         = y;
+      y         = t;
+    }
     navAxes((int16_t)(g_cfg.nav_x_sign * x), (int16_t)(g_cfg.nav_y_sign * y), now);
+  }
 
   uint8_t btn = 0;
   st = M5Chain.getJoystickButtonStatus(g_nav_id, &btn, CHAIN_CALL_TIMEOUT_MS);
@@ -641,9 +650,9 @@ static bool pollNavStick(uint32_t now)
   if (st == CHAIN_OK) {
     bool down = (btn != 0);
     if (down && !g_nav_btn_down) {
-      actionFire(LAYERS[g_layer].nav_click, now);
+      actionFire(layerAt(g_layer).nav_click, now);
       protoEventTap("nav");
-      companionEventTap("nav", actionLabel(LAYERS[g_layer].nav_click));
+      companionEventTap("nav", actionLabel(layerAt(g_layer).nav_click));
     }
     g_nav_btn_down = down;
   }
@@ -660,8 +669,14 @@ static bool pollScrollStick(uint32_t now)
   chain_status_t st =
       M5Chain.getJoystickMappedInt16Value(g_scroll_id, &x, &y, CHAIN_CALL_TIMEOUT_MS);
   chainResult(st);
-  if (st == CHAIN_OK)
+  if (st == CHAIN_OK) {
+    if (g_cfg.scroll_swap_xy) {
+      int16_t t = x;
+      x         = y;
+      y         = t;
+    }
     scrollAxes((int16_t)(g_cfg.scroll_x_sign * x), (int16_t)(g_cfg.scroll_y_sign * y), now);
+  }
 
   uint8_t btn = 0;
   st = M5Chain.getJoystickButtonStatus(g_scroll_id, &btn, CHAIN_CALL_TIMEOUT_MS);
@@ -669,9 +684,9 @@ static bool pollScrollStick(uint32_t now)
   if (st == CHAIN_OK) {
     bool down = (btn != 0);
     if (down && !g_scroll_btn_down) {
-      actionFire(LAYERS[g_layer].scroll_click, now);
+      actionFire(layerAt(g_layer).scroll_click, now);
       protoEventTap("scroll");
-      companionEventTap("scroll", actionLabel(LAYERS[g_layer].scroll_click));
+      companionEventTap("scroll", actionLabel(layerAt(g_layer).scroll_click));
     }
     g_scroll_btn_down = down;
   }
@@ -751,16 +766,16 @@ static void nodeLedsCompute(uint32_t now)
     } else if (hs == HOST_ERROR && (now - hostStateSince()) < 900) {
       rgb[0] = ((now - hostStateSince()) / 150) & 1 ? 255 : 40; /* red blink */
       rgb[1] = 0; rgb[2] = 0;
-    } else if (LAYER_COUNT > 1 && g_ck_down && !g_ck_consumed &&
+    } else if (layerCount() > 1 && g_ck_down && !g_ck_consumed &&
         (now - g_ck_press_ms) >= NODE_LED_COUNT_AFTER_MS) {
       /* "keep holding" - show where the hold is going. Suppressed on a
-       * single-layer build, where the hold goes nowhere. */
-      uint8_t next = (uint8_t)((g_layer + 1) % LAYER_COUNT);
+       * single-layer device, where the hold goes nowhere. */
+      uint8_t next = (uint8_t)((g_layer + 1) % layerCount());
       layerRgb(next, rgb);
     } else if ((int32_t)(now - g_ck_flash_until) < 0) {
-      fnColor(LAYERS[g_layer].chain_key.fn, g_layer, rgb);
+      fnColor(layerAt(g_layer).chain_key.fn, g_layer, rgb);
     } else {
-      fnColor(LAYERS[g_layer].chain_key.fn, g_layer, rgb);
+      fnColor(layerAt(g_layer).chain_key.fn, g_layer, rgb);
       for (uint8_t i = 0; i < 3; i++) rgb[i] = scalePct(rgb[i], 80);
       tintForBattery(rgb);
     }
@@ -927,6 +942,15 @@ void chainService(uint32_t now)
              (unsigned)count);
         g_chain_ready = false;
         g_reenum_at   = now;
+      } else {
+        /* Same count, but SOMETHING sent "enumerate please" - typically a
+         * node that was unplugged and re-plugged fast enough to keep its id.
+         * It came back with its LED dark, and our "already sent" cache would
+         * never repaint it. Forget what we sent; the next idle loops repaint
+         * every node (one transaction each, rate-limited as usual). Seen on
+         * hardware 2026-09-15: Chain Key dark at idle after a re-plug. */
+        for (uint8_t i = 0; i < NL_COUNT; i++) g_nl[i].primed = false;
+        monoConfigChanged(); /* re-push rotation/brightness + redraw the panel */
       }
       return; /* this loop's bus transaction was the count check */
     }
@@ -987,8 +1011,8 @@ void chainOnLayerChanged(uint32_t now)
 void chainPrintStatus(void)
 {
   Serial.printf("\r\n--- flow-sidecar " FLOW_SIDECAR_VERSION " ---\r\n");
-  Serial.printf("layer   : %u/%u %s\r\n", (unsigned)g_layer, (unsigned)LAYER_COUNT,
-                LAYERS[g_layer].name);
+  Serial.printf("layer   : %u/%u %s\r\n", (unsigned)g_layer, (unsigned)layerCount(),
+                layerAt(g_layer).name);
   Serial.printf("chain   : %s, %u device(s), bus %s\r\n", g_chain_ready ? "ready" : "DOWN",
                 (unsigned)g_dev_list.count, chainBusName());
   for (uint16_t i = 0; i < g_dev_list.count; i++) {
@@ -1014,6 +1038,9 @@ void chainPrintStatus(void)
                 settingsLoadedFromNvs() ? "from NVS" : "defaults",
                 (unsigned)FLOW_SIDECAR_PROTO,
                 (g_cfg.mono_idle == MONO_IDLE_LETTER) ? "letter" : "blank");
+  Serial.printf("keys    : key1=G%u key2=G%u (swap %u), nav swapxy %u, scroll swapxy %u\r\n",
+                (unsigned)g_key[0].pin, (unsigned)g_key[1].pin, (unsigned)g_cfg.swap_keys,
+                (unsigned)g_cfg.nav_swap_xy, (unsigned)g_cfg.scroll_swap_xy);
 #if FLOW_COMPANION
   companionPrintStatus();
 #endif

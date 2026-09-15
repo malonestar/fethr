@@ -44,14 +44,20 @@ void settingsDefaults(RuntimeConfig &c)
 {
   memset(&c, 0, sizeof(c));
 
-  /* Layer colours come from the layer table itself, so there is exactly one
-   * place that says "FLOW is blue". Slots past LAYER_COUNT stay black. */
-  for (uint8_t i = 0; i < FLOW_MAX_LAYERS; i++) {
-    if (i < LAYER_COUNT) {
-      c.layer_rgb[i][0] = LAYERS[i].r;
-      c.layer_rgb[i][1] = LAYERS[i].g;
-      c.layer_rgb[i][2] = LAYERS[i].b;
-    }
+  /* How many layers a factory-default device has. FLOW_EXTRA_LAYERS is the
+   * requested count; the two clamps make a bad value a small table rather
+   * than an out-of-bounds seed loop. */
+  uint8_t want = (uint8_t)FLOW_EXTRA_LAYERS;
+  if (want < 1) want = 1;
+  if (want > DEFAULT_LAYER_COUNT) want = DEFAULT_LAYER_COUNT;
+  c.layer_count = want;
+
+  /* The keymap and the layer colours both come from the compile-time table, so
+   * there is exactly one place that says "FLOW is blue" and one that says what
+   * Key1 does on it. Slots past layer_count stay zeroed. */
+  for (uint8_t i = 0; i < c.layer_count; i++) {
+    layerDefaultInto(i, c.layers[i]);
+    layerDefaultRgb(i, c.layer_rgb[i]);
   }
 
   /* Function colours come from the FN_RGB table in layers.cpp. */
@@ -81,6 +87,10 @@ void settingsDefaults(RuntimeConfig &c)
   c.scroll_x_sign = SCROLL_X_SIGN;
   c.scroll_y_sign = SCROLL_Y_SIGN;
   c.mouse_y_sign  = +1; /* on top of MOUSE_Y_SIGN - see config.h */
+
+  c.nav_swap_xy    = 0;
+  c.scroll_swap_xy = 0;
+  c.swap_keys      = 0; /* Key 1 = the button farther from the lanyard hole */
 }
 
 /* ================================================================== */
@@ -169,12 +179,19 @@ bool settingsReset(void)
 /* ================================================================== */
 
 /*
- * Both callees only set a flag. The LEDs repaint on the next ledsUpdate(); the
- * Mono panel re-sends rotation/brightness from monoService(), one Chain
- * transaction per loop like every other panel write.
+ * The first two callees only set a flag. The LEDs repaint on the next
+ * ledsUpdate(); the Mono panel re-sends rotation/brightness from
+ * monoService(), one Chain transaction per loop like every other panel write.
+ *
+ * keysApplySwap() is the exception: it re-assigns two GPIOs and re-seeds the
+ * debounce state, which is the whole point of swap_keys being live. It is
+ * idempotent - it returns immediately when the assignment already matches - so
+ * calling it after EVERY `set` cannot disturb a key that is being held while
+ * some unrelated colour is changed.
  */
 void settingsApplyAll(void)
 {
+  keysApplySwap();
   ledsConfigChanged();
   monoConfigChanged();
 }

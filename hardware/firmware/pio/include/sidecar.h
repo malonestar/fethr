@@ -84,6 +84,18 @@ enum HostState : uint8_t {
 void cycleLayer(uint32_t now);
 void releaseAllHolds(void);
 
+/*
+ * Bind g_key[0]/g_key[1] to the two DualKey GPIOs according to
+ * g_cfg.swap_keys (0.2.0 - it replaced the compile-time KEYS_SWAPPED).
+ *
+ * IDEMPOTENT: returns immediately when the assignment already matches, so
+ * settingsApplyAll() can call it after every `set` without disturbing a key
+ * that is down. When it does swap, it ends any hold first and re-seeds the
+ * debounce state from the pins' current levels, so the change cannot leave a
+ * key stuck on the host or synthesise a phantom edge.
+ */
+void keysApplySwap(void);
+
 /* Jump straight to a layer (the `layer` protocol command and boot_layer).
  * Same housekeeping as cycleLayer(); a no-op if `layer` is out of range or is
  * already current. Returns true if the layer actually changed. */
@@ -209,6 +221,12 @@ void protoEventLayer(uint8_t layer);
 void protoEventHold(uint8_t key_1based, bool active, uint8_t fn);
 void protoEventTap(const char *key_name);
 void protoEventChain(void);
+
+/* 0.2.0. The keymap changed (`set_action` / `set_layer_meta`), so a second
+ * client that is showing it should re-read `get_layers`. Carries no payload
+ * on purpose: the editing client already knows what it sent, and anyone else
+ * needs the whole table rather than a diff. */
+void protoEventLayoutChanged(void);
 
 /* ================================================================== */
 /* companion.cpp (0.2.0)                                               */

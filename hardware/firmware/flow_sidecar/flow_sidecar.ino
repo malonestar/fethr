@@ -73,7 +73,8 @@ void setup()
    * defaults for a frame before the saved colours land. */
   settingsBegin();
 
-  /* Local keys are active-low. */
+  /* Local keys are active-low. The pins themselves are assigned by
+   * keysApplySwap() below, which reads g_cfg.swap_keys. */
   g_key[0].pin = PIN_KEY1;
   g_key[1].pin = PIN_KEY2;
   for (uint8_t i = 0; i < 2; i++) {
@@ -87,9 +88,10 @@ void setup()
     g_key[i].hold_action.mods = MOD_NONE;
     g_key[i].hold_action.fn   = FN_NONE;
   }
+  keysApplySwap(); /* a no-op unless the saved config swaps them */
 
   /* g_cfg.boot_layer decides where we come up. Set before anything paints. */
-  g_layer = (g_cfg.boot_layer < LAYER_COUNT) ? g_cfg.boot_layer : 0;
+  g_layer = (g_cfg.boot_layer < layerCount()) ? g_cfg.boot_layer : 0;
 
   ledsBegin();
 
@@ -111,10 +113,10 @@ void setup()
 
   /* Announce the starting layer on the panel and the key LEDs: scroll the
    * layer name once, then settle on its letter (same as a layer change). */
-  monoScrollText(LAYERS[g_layer].name, /*announce_layer=*/true);
+  monoScrollText(layerAt(g_layer).name, /*announce_layer=*/true);
   ledsUpdate(now);
   protoEventLayer(g_layer);
-  FLOG("[flow-sidecar] layer %u (%s)\r\n", (unsigned)g_layer, LAYERS[g_layer].name);
+  FLOG("[flow-sidecar] layer %u (%s)\r\n", (unsigned)g_layer, layerAt(g_layer).name);
 }
 
 void loop()
@@ -238,7 +240,9 @@ static void scanLocalKeys(uint32_t now)
     if (level) {
       /* Press edge. Capture the action now so a layer change mid-hold cannot
        * strand a key down on the host. */
-      const Action &a = (i == 0) ? LAYERS[g_layer].key1 : LAYERS[g_layer].key2;
+      /* Captured by value further down; a set_action landing mid-hold
+       * therefore finishes the hold with the binding it started with. */
+      const Action &a = (i == 0) ? layerAt(g_layer).key1 : layerAt(g_layer).key2;
       if (actionIsHold(a)) {
         k.hold_action = a;
         k.hold_active = true;
@@ -283,6 +287,42 @@ void releaseAllHolds(void)
   }
 }
 
+/*
+ * Apply g_cfg.swap_keys to the two GPIOs (0.2.0).
+ *
+ * The early return makes this idempotent, which is what lets settingsApplyAll()
+ * call it after every `set`. When it does change the binding it releases any
+ * hold FIRST - the host must not be left with F8 down on a pin nobody is
+ * watching any more - and then seeds raw/stable from the pins' current levels
+ * rather than from `false`, so a swap performed while a key happens to be down
+ * does not synthesise a press edge on the other one.
+ */
+void keysApplySwap(void)
+{
+  uint8_t p0 = (uint8_t)(g_cfg.swap_keys ? PIN_KEY2 : PIN_KEY1);
+  uint8_t p1 = (uint8_t)(g_cfg.swap_keys ? PIN_KEY1 : PIN_KEY2);
+
+  if (g_key[0].pin == p0 && g_key[1].pin == p1) return;
+
+  releaseAllHolds();
+
+  g_key[0].pin = p0;
+  g_key[1].pin = p1;
+
+  uint32_t now = millis();
+  for (uint8_t i = 0; i < 2; i++) {
+    pinMode(g_key[i].pin, INPUT_PULLUP);
+    bool level            = (digitalRead(g_key[i].pin) == LOW);
+    g_key[i].raw          = level;
+    g_key[i].stable       = level;
+    g_key[i].changed_ms   = now;
+    g_key[i].hold_active  = false;
+  }
+
+  FLOG("[keys] swap=%u -> key1=G%u key2=G%u\r\n", (unsigned)g_cfg.swap_keys, (unsigned)p0,
+       (unsigned)p1);
+}
+
 /* ================================================================== */
 /* Layer switching                                                     */
 /* ================================================================== */
@@ -310,17 +350,19 @@ static void enterLayer(uint8_t layer, uint32_t now)
   protoEventLayer(g_layer);
   companionEventLayer(g_layer);
 
-  FLOG("[layer] -> %u (%s)\r\n", (unsigned)g_layer, LAYERS[g_layer].name);
+  FLOG("[layer] -> %u (%s)\r\n", (unsigned)g_layer, layerAt(g_layer).name);
 }
 
 void cycleLayer(uint32_t now)
 {
-  enterLayer((uint8_t)((g_layer + 1) % LAYER_COUNT), now);
+  uint8_t n = layerCount();
+  if (n == 0) return;
+  enterLayer((uint8_t)((g_layer + 1) % n), now);
 }
 
 bool setLayer(uint8_t layer, uint32_t now)
 {
-  if (layer >= LAYER_COUNT || layer == g_layer) return false;
+  if (layer >= layerCount() || layer == g_layer) return false;
   enterLayer(layer, now);
   return true;
 }
@@ -336,7 +378,7 @@ static void bootBanner(void)
 #if FLOW_DEBUG || FLOW_SERIAL_CONSOLE
   Serial.printf("\r\n[flow-sidecar] v" FLOW_SIDECAR_VERSION
                 " boot - %u layers, proto %u, '?' for status\r\n",
-                (unsigned)LAYER_COUNT, (unsigned)FLOW_SIDECAR_PROTO);
+                (unsigned)layerCount(), (unsigned)FLOW_SIDECAR_PROTO);
 #endif
 }
 

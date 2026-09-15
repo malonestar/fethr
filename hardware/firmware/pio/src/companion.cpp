@@ -161,8 +161,8 @@ static void sendHello(void)
 
   evBegin(COMPANION_EV_HELLO);
   outPrintf(",\"fw\":\"%s\",\"layers\":[", FLOW_SIDECAR_VERSION);
-  for (uint8_t i = 0; i < LAYER_COUNT; i++) {
-    outPrintf("%s\"%s\"", (i ? "," : ""), LAYERS[i].name);
+  for (uint8_t i = 0; i < layerCount(); i++) {
+    outPrintf("%s\"%s\"", (i ? "," : ""), layerAt(i).name);
   }
   outPrintf("],\"layer\":%u,\"rgb\":[%u,%u,%u]", (unsigned)g_layer, (unsigned)rgb[0],
             (unsigned)rgb[1], (unsigned)rgb[2]);
@@ -179,14 +179,14 @@ static void sendBattery(void)
 
 void companionEventLayer(uint8_t layer)
 {
-  if (!g_linked || layer >= LAYER_COUNT) return;
+  if (!g_linked || layer >= layerCount()) return;
 
   uint8_t rgb[3];
   layerRgb(layer, rgb);
 
   evBegin(COMPANION_EV_LAYER);
   outPrintf(",\"index\":%u,\"name\":\"%s\",\"rgb\":[%u,%u,%u]", (unsigned)layer,
-            LAYERS[layer].name, (unsigned)rgb[0], (unsigned)rgb[1], (unsigned)rgb[2]);
+            layerAt(layer).name, (unsigned)rgb[0], (unsigned)rgb[1], (unsigned)rgb[2]);
   outLegend(layer);
   evEnd();
 }
@@ -345,14 +345,13 @@ static void handleLine(const char *line, uint32_t now)
   }
 
   if (strcmp(cmd, COMPANION_CMD_LAYER_NEXT) == 0) {
-    if (LAYER_COUNT > 1) cycleLayer(now);
+    if (layerCount() > 1) cycleLayer(now);
     return;
   }
 
   if (strcmp(cmd, COMPANION_CMD_LAYER_PREV) == 0) {
-    if (LAYER_COUNT > 1) {
-      setLayer((uint8_t)((g_layer + LAYER_COUNT - 1) % LAYER_COUNT), now);
-    }
+    uint8_t n = layerCount();
+    if (n > 1) setLayer((uint8_t)((g_layer + n - 1) % n), now);
     return;
   }
 
@@ -360,7 +359,7 @@ static void handleLine(const char *line, uint32_t now)
     JsonVariantConst iv = root["index"];
     if (!iv.is<long>()) return;
     long n = iv.as<long>();
-    if (n < 0 || n >= (long)LAYER_COUNT) return;
+    if (n < 0 || n >= (long)layerCount()) return;
     setLayer((uint8_t)n, now);
     return;
   }

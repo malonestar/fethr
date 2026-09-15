@@ -47,4 +47,19 @@
 #define PROTO_EV_BATTERY "battery"
 #define PROTO_EV_BOOT    "boot"
 
+/* proto 2 (0.2.0): the runtime layout. `layers` is the get_layers reply;
+ * `layout_changed` is the unsolicited "re-read it" event. */
+#define PROTO_EV_LAYERS         "layers"
+#define PROTO_EV_LAYOUT_CHANGED "layout_changed"
+
+/* The six editable action slots of a layer, as `set_action` names them.
+ * Index order is the order get_layers emits, and is what slotByName() maps
+ * onto the LayerRuntime members. */
+#define PROTO_SLOT_KEY1             "key1"
+#define PROTO_SLOT_KEY2             "key2"
+#define PROTO_SLOT_CHAIN_KEY        "chain_key"
+#define PROTO_SLOT_CHAIN_KEY_DOUBLE "chain_key_double"
+#define PROTO_SLOT_NAV_CLICK        "nav_click"
+#define PROTO_SLOT_SCROLL_CLICK     "scroll_click"
+
 #endif /* FLOW_SERIAL_PROTO_H */

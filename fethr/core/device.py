@@ -32,6 +32,7 @@ __all__ = [
     "DEFAULT_CONFIG",
     "LAYER_NAMES",
     "PRODUCT_MATCH",
+    "PROTO_ACTIONS",
     "STATE_VALUES",
     "SidecarDevice",
     "SidecarError",
@@ -46,10 +47,17 @@ VENDOR_ID = 0x303A
 #: Substring required in the USB product/description string.
 PRODUCT_MATCH = "fethr"
 
+#: Protocol version that added runtime layout and editable actions
+#: (``PROTOCOL.md`` §"v2 additions": ``get_layers``, ``set_action``,
+#: ``set_layer_meta``, ``swap_keys``, ``*_swap_xy``).  A device reporting less
+#: than this can still be placed and oriented in the chain builder, but its key
+#: map is whatever the firmware was built with.
+PROTO_ACTIONS = 2
+
 #: Fallback layer list for a disconnected device.  A connected one reports its
 #: own in the ``hello`` reply, which is authoritative: the firmware ships the
 #: FLOW layer only, and a build with ``FLOW_EXTRA_LAYERS`` on has more.
-LAYER_NAMES = ("FLOW",)
+LAYER_NAMES = ("FETHR",)
 
 #: Engine states the device understands (``PROTOCOL.md`` ``state``).  Mirrors
 #: :class:`fethr.core.dictation.EngineState`; anything else is not sent.
@@ -95,6 +103,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "scroll_x_sign": 1,
     "mouse_y_sign": 1,
     "led_index_key1": 0,
+    # Protocol 2 only.  Listed here so the Sidecar page can render the chain
+    # builder's orientation controls with nothing plugged in; a protocol 1
+    # device rejects `set` on these, which is what
+    # :func:`fethr.core.layout.filter_for_proto` is for.
+    "swap_keys": False,
+    "nav_swap_xy": False,
+    "scroll_swap_xy": False,
 }
 
 
@@ -220,6 +235,9 @@ class SidecarDevice:
 
         self.info: dict[str, Any] = {}
         self.config: dict[str, Any] = {}
+        #: Cached ``get_layers`` reply; empty until asked, and on protocol 1
+        #: devices it stays that way (see :meth:`get_layers`).
+        self.layers: list[dict[str, Any]] = []
         self.last_error: str = ""
 
     # -- lifecycle -------------------------------------------------------
@@ -316,6 +334,7 @@ class SidecarDevice:
             handle, self._serial, self._port = self._serial, None, None
             pending = list(self._pending.values())
             self._pending.clear()
+            self.layers = []
         for slot in pending:
             try:
                 slot.put_nowait({"ev": "err", "msg": "disconnected"})
@@ -458,6 +477,95 @@ class SidecarDevice:
         """Flash both key LEDs white so the user can spot the device."""
         return self.request("identify")
 
+    # -- protocol 2: runtime layout and editable actions -------------------
+
+    @property
+    def proto(self) -> int:
+        """Protocol version the device reported, or 0 when nothing is attached."""
+        try:
+            return int(self.info.get("proto") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    @property
+    def supports_actions(self) -> bool:
+        """True when this device can have its key map edited over the wire."""
+        return self.connected and self.proto >= PROTO_ACTIONS
+
+    def _require_actions(self, what: str) -> None:
+        if not self.connected:
+            raise SidecarError("no sidecar connected")
+        if self.proto < PROTO_ACTIONS:
+            raise SidecarError(
+                f"{what} needs firmware 0.2 (this device speaks protocol "
+                f"{self.proto or 1})"
+            )
+
+    def get_layers(self) -> list[dict[str, Any]]:
+        """Fetch every layer with its metadata and bound actions.
+
+        Returns the ``layers`` array of the ``get_layers`` reply (see
+        ``PROTOCOL.md``): name, colour, the three control modes, and the action
+        bound to each slot.  Cached on :attr:`layers` for the UI.
+
+        Raises:
+            SidecarError: when nothing is attached or the device predates
+                protocol 2 — the caller is expected to check
+                :attr:`supports_actions` first and degrade rather than ask.
+        """
+        self._require_actions("reading the key map")
+        reply = self.request("get_layers", timeout=3.0)
+        layers = reply.get("layers")
+        self.layers = list(layers) if isinstance(layers, list) else []
+        return self.layers
+
+    def set_action(self, layer: int, slot: str, action: dict[str, Any]) -> dict[str, Any]:
+        """Bind one slot on one layer.
+
+        ``action`` is validated against the protocol's vocabulary before it is
+        sent (see :func:`fethr.core.actions.action_request`), so a typo comes
+        back as a Python ``ValueError`` here instead of an ``err`` from the
+        device three layers away.
+        """
+        from .actions import action_request
+
+        self._require_actions("editing actions")
+        return self.request("set_action", **action_request(layer, slot, action))
+
+    def set_layer_meta(self, layer: int, **fields: Any) -> dict[str, Any]:
+        """Rename or recolour a layer, or change its nav/scroll/angle modes.
+
+        Any subset of ``name``, ``rgb``, ``nav_mode``, ``scroll_mode`` and
+        ``angle_mode`` may be given; the device applies what it is sent, and
+        validates the lot before writing any of it.
+
+        The length rule on ``name`` is checked here too, and for the same reason
+        the protocol gives for checking it there: 1–8 characters, refused rather
+        than truncated.  Silently shortening what someone typed is a worse
+        answer than telling them it does not fit.
+        """
+        from .actions import ANGLE_MODES, NAV_MODES, SCROLL_MODES
+
+        self._require_actions("editing layers")
+        payload: dict[str, Any] = {"layer": int(layer)}
+        if "name" in fields:
+            name = str(fields["name"]).strip()
+            if not 1 <= len(name) <= 8:
+                raise SidecarError("a layer name must be 1 to 8 characters")
+            payload["name"] = name
+        if "rgb" in fields:
+            payload["rgb"] = [int(c) for c in fields["rgb"]][:3]
+        for key, allowed in (("nav_mode", NAV_MODES), ("scroll_mode", SCROLL_MODES),
+                             ("angle_mode", ANGLE_MODES)):
+            if key in fields:
+                value = str(fields[key])
+                if value not in allowed:
+                    raise SidecarError(f"unknown {key}: {value}")
+                payload[key] = value
+        if len(payload) == 1:
+            raise SidecarError("set_layer_meta needs at least one field")
+        return self.request("set_layer_meta", **payload)
+
     def mono(self, text: str) -> dict[str, Any]:
         """Scroll up to 32 characters across the 8x8 Mono panel."""
         return self.request("mono", text=str(text)[:32])
@@ -480,6 +588,8 @@ class SidecarDevice:
             "proto": self.info.get("proto"),
             "layers": list(self.info.get("layers") or LAYER_NAMES),
             "layer": self.info.get("layer", 0),
+            "supports_actions": self.supports_actions,
+            "companion": self.info.get("companion", False),
             "vbat_mv": self.info.get("vbat_mv"),
             "usb_mv": self.info.get("usb_mv"),
             "uptime_s": self.info.get("uptime_s"),

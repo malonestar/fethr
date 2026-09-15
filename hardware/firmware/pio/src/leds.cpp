@@ -30,11 +30,21 @@
 
 static Adafruit_NeoPixel LED(NUM_LEDS, PIN_LED_DATA, NEO_GRB + NEO_KHZ800);
 
-/* Which physical pixel each key owns. Two LEDs, so key2 is always the other
- * one; validated on the way in (led_index_key1 is constrained to 0|1). */
+/*
+ * Which physical pixel each key owns. Two LEDs, so key2 is always the other
+ * one; validated on the way in (led_index_key1 is constrained to 0|1).
+ *
+ * 0.2.0: g_cfg.swap_keys flips it as well. led_index_key1 describes the
+ * UNSWAPPED board - the pixel under PIN_KEY1 - so when the two buttons trade
+ * places the colour has to follow the finger, which is exactly what the old
+ * compile-time KEYS_SWAPPED #if did to LED_INDEX_KEY1. Setting swap_keys and
+ * then finding the LEDs reversed is still fixable with led_index_key1; the two
+ * simply compose.
+ */
 static inline uint8_t ledForKey(uint8_t key_index)
 {
   uint8_t first = (uint8_t)(g_cfg.led_index_key1 & 1u);
+  if (g_cfg.swap_keys) first = (uint8_t)(1u - first);
   return (key_index == 0) ? first : (uint8_t)(1u - first);
 }
 
@@ -197,8 +207,8 @@ void ledsUpdate(uint32_t now)
     }
   }
 
-  const LayerConfig &L     = LAYERS[g_layer];
-  bool               dirty = !g_led_primed;
+  const LayerRuntime &L     = layerAt(g_layer);
+  bool                dirty = !g_led_primed;
 
   uint8_t hs   = hostState();
   bool    busy = (hs == HOST_TRANSCRIBING || hs == HOST_CLEANING);

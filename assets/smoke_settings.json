@@ -1,0 +1,20 @@
+{
+  "dictation": {
+    "asr_url": "http://127.0.0.1:8890",
+    "cleanup_url": "http://127.0.0.1:11434",
+    "cleanup_model": "qwen3:14b"
+  },
+  "ui": {
+    "theme": "dark",
+    "window_width": 1180,
+    "window_height": 760,
+    "start_minimised": false
+  },
+  "first_run": false,
+  "legacy_imported": "disabled-for-capture",
+  "sidecar_enabled": true,
+  "sidecar": {
+    "auto_connect": true,
+    "layout": {}
+  }
+}

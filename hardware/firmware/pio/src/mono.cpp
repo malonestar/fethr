@@ -275,11 +275,11 @@ void monoOnLayerChanged(uint32_t now)
   if (chainMonoId() != 0) {
     /* The layer letter is raised when the panel comes back to pixel mode, so
      * the two do not fight over the screen. */
-    monoScrollText(LAYERS[g_layer].name, /*announce_layer=*/true);
+    monoScrollText(layerAt(g_layer).name, /*announce_layer=*/true);
     return;
   }
 #endif
-  monoOverlay(LAYERS[g_layer].glyph, MONO_LAYER_MS, now);
+  monoOverlay(layerAt(g_layer).glyph, MONO_LAYER_MS, now);
 }
 
 /* ================================================================== */
@@ -336,7 +336,7 @@ static MonoView monoDesired(uint32_t now)
   /* Idle. See the header comment for why the letter is full brightness. */
   if (g_cfg.mono_idle == MONO_IDLE_LETTER) {
     v.kind = MV_GLYPH;
-    v.arg  = LAYERS[g_layer].glyph;
+    v.arg  = layerAt(g_layer).glyph;
     return v;
   }
 
@@ -429,7 +429,7 @@ static bool nameScrollStep(uint32_t now, uint8_t id)
       g_shown.arg  = 0xFF;
       /* A layer change ends on its letter; a host notification just returns
        * to whatever the idle rule says. */
-      if (g_ns_announce_layer) monoOverlay(LAYERS[g_layer].glyph, MONO_LAYER_MS, now);
+      if (g_ns_announce_layer) monoOverlay(layerAt(g_layer).glyph, MONO_LAYER_MS, now);
       return true;
 
     default:

@@ -22,3 +22,13 @@ hardware/docs/
 assets/candidates/
 assets/shots/
 assets/shots_on/
+assets/shots_builder/
+
+# Camera originals of the modules. Reference only, and they have hands in them:
+# assets/photos_cut/ is what build_sprites.py actually reads.
+assets/photos_raw/
+fethr/ui/web/img/*.orig.png
+fethr/ui/web/img/contact_sprites.png
+assets/photos_raw/
+assets/photos_cut/
+assets/shots_builder/

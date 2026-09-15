@@ -93,7 +93,7 @@ const api = new Proxy({}, {
 
 // ------------------------------------------------------- the layer map ----
 // Which layers exist is the DEVICE's answer: the `hello` reply carries the
-// names, and the firmware ships FLOW only. The table below is just the
+// names, and the firmware ships FETHR only. The table below is just the
 // human-readable description of the one layer we can describe; a layer the
 // firmware was built with but this page has never heard of still gets a card,
 // named, with a pointer at the firmware's own table.
@@ -101,7 +101,7 @@ const api = new Proxy({}, {
 // colour the key actually lights up.
 
 const LAYER_DETAIL = {
-  FLOW: {
+  FETHR: {
     letter: 'F',
     rows: [
       ['Key 1',       'Hold → F8 · raw dictation',                    'DICT_RAW'],
@@ -118,7 +118,7 @@ const LAYER_DETAIL = {
 /** Layer names the device reports, or the single layer the firmware ships. */
 function deviceLayers() {
   const names = state.device && state.device.layers;
-  return Array.isArray(names) && names.length ? names : ['FLOW'];
+  return Array.isArray(names) && names.length ? names : ['FETHR'];
 }
 
 /** Name + letter + rows for one layer, described or not. */
@@ -149,6 +149,24 @@ function initNav() {
       $$('.page').forEach((p) => p.classList.toggle('is-active', p.id === `page-${page}`));
       if (page === 'audio') refreshAudio();
       if (page === 'sidecar') refreshDevice();
+    });
+  });
+}
+
+/** The Sidecar page's Layout / Settings tabs. */
+function initTabs() {
+  $$('#sidecar-tabs .tab').forEach((tab) => {
+    tab.addEventListener('click', () => {
+      $$('#sidecar-tabs .tab').forEach((other) => {
+        const on = other === tab;
+        other.classList.toggle('is-active', on);
+        other.setAttribute('aria-selected', String(on));
+      });
+      $$('.tabpane').forEach((pane) =>
+        pane.classList.toggle('is-active', pane.id === `tab-${tab.dataset.tab}`));
+      // The canvas is laid out in absolute pixels, so it has to be (re)drawn
+      // once it actually has a size.
+      if (tab.dataset.tab === 'layout') renderCanvas();
     });
   });
 }
@@ -378,6 +396,7 @@ function setActiveLayer(index) {
   $$('#layer-switch .btn').forEach((b, i) =>
     b.classList.toggle('btn-primary', i === index));
   paintDeviceStrip();
+  paintBuilderLayer();
 }
 
 function fnColour(name) {
@@ -677,6 +696,7 @@ async function refreshDevice() {
     buildColourEditors();
     renderDeviceConfig();
     renderDeviceStats(status);
+    await syncBuilder(status);
   } catch (err) {
     // Bridge missing (page opened outside pywebview) — leave defaults on screen.
     console.warn('device refresh failed', err);
@@ -705,6 +725,1014 @@ function initDeviceButtons() {
     toast('Device restored to factory defaults', 'good');
     refreshDevice();
   });
+}
+
+// ========================================================= chain builder ==
+//
+// The Layout tab. The canvas is a picture of the user's own sidecar: where
+// each M5Stack Chain module sits on the desk and which way round it is
+// mounted. Placement is cosmetic and saved in settings; orientation is not —
+// it is pushed to the device as axis settings the moment it changes.
+//
+// The order of the modules on the bus is NOT editable here. It is physical,
+// the device reports it in `hello`/`status`, and the connector is drawn from
+// that report. A module the user places that the device has not reported is
+// drawn dimmed, because it is a plan rather than a fact.
+//
+// Two rules the code leans on:
+//   * anything derived from the protocol (module footprints, allowed
+//     rotations, the key vocabulary, the rotation -> settings truth table)
+//     comes from Python, so the page cannot drift from PROTOCOL.md;
+//   * nothing here assumes protocol 2. On a 0.1.x device the canvas still
+//     works and the action editor says why it is off.
+
+const builder = {
+  model: null,        // api.builder_model(): modules, grid, vocabulary
+  layout: null,       // {version, nodes: {key: {module, bus_id, x, y, rotation}}}
+  chain: [],          // detected bus nodes, in order: {key, module, bus_id, role}
+  companion: false,
+  selected: null,     // layout key
+  layers: [],         // proto 2 get_layers() detail
+  editable: false,    // action editing available
+  hint: '',           // why it is not
+  layerIndex: 0,      // which layer the inspector is editing
+  dragging: null,
+  saveTimer: null,
+};
+
+/** Outward normal of the IN edge, per rotation, in screen coordinates (y down).
+ *  Unrotated a module takes the bus in on its left and passes it out right;
+ *  CSS rotate() turns that vector with the node. */
+const IN_NORMAL = { 0: [-1, 0], 90: [0, -1], 180: [1, 0], 270: [0, 1] };
+
+const gridPx = () => (builder.model ? builder.model.grid_px : 24);
+const moduleSpec = (module) => (builder.model && builder.model.modules[module]) || null;
+const negate = ([x, y]) => [-x, -y];
+
+/** Pixel footprint of a placed node. */
+function nodeSize(node) {
+  const spec = moduleSpec(node.module);
+  const g = gridPx();
+  const cells = spec ? spec.cells : [3, 3];
+  return [cells[0] * g, cells[1] * g];
+}
+
+/** Centre of a node's IN or OUT edge, in canvas pixels. */
+function portPoint(node, which) {
+  const [w, h] = nodeSize(node);
+  const g = gridPx();
+  const inward = IN_NORMAL[node.rotation] || IN_NORMAL[0];
+  const n = which === 'in' ? inward : negate(inward);
+  return [node.x * g + w / 2 + n[0] * (w / 2), node.y * g + h / 2 + n[1] * (h / 2)];
+}
+
+const chainEntry = (key) => builder.chain.find((c) => c.key === key) || null;
+const roleFor = (key) => (chainEntry(key) || {}).role || null;
+
+/** Is this node really there? Placed-but-absent modules are drawn dimmed.
+ *  The DualKey and the companion are not bus nodes, so they have their own
+ *  answers: the connection itself, and the `companion` field. */
+function isDetected(key) {
+  const node = builder.layout && builder.layout.nodes[key];
+  if (!node) return false;
+  if (node.module === 'dualkey') return Boolean(state.device && state.device.connected);
+  if (node.module === 'atom') return builder.companion;
+  return Boolean(chainEntry(key));
+}
+
+/** The DualKey entry, which is always present: it is the canvas's origin. */
+function dualKeyEntry() {
+  const found = Object.entries(builder.layout.nodes)
+    .find(([, node]) => node.module === 'dualkey');
+  return found ? { key: found[0], node: found[1] } : null;
+}
+
+/** Slots this module offers. Mirrors fethr.core.layout.slots_for(). */
+function slotsFor(module, role) {
+  const spec = moduleSpec(module);
+  if (!spec) return [];
+  if (module === 'joystick') {
+    return builder.model.role_slots[role === 'scroll' ? 'scroll' : 'nav'] || spec.slots;
+  }
+  return spec.slots;
+}
+
+// ------------------------------------------------------------- lifecycle --
+
+async function builderBoot() {
+  if (builder.model) return;
+  builder.model = await api.builder_model();
+  builder.layout = await api.get_sidecar_layout();
+  buildNodePicker();
+  initBuilderControls();
+  renderCanvas();
+  renderInspector();
+}
+
+/** Fold a device status into the builder: bus order, roles, new modules. */
+async function syncBuilder(status) {
+  if (!builder.model || !builder.layout) return;
+
+  let joysticks = 0;
+  builder.chain = (status.nodes || [])
+    .filter((node) => moduleSpec(node.type) && moduleSpec(node.type).chained)
+    .map((node) => {
+      let role = null;
+      if (node.type === 'joystick') {
+        // The device names the roles; two unnamed sticks are nav then scroll,
+        // which is the order the firmware assigns them in.
+        role = node.role || (joysticks === 0 ? 'nav' : 'scroll');
+        joysticks += 1;
+      }
+      return { key: `${node.type}:${node.id}`, module: node.type, bus_id: node.id, role };
+    });
+  builder.companion = Boolean(status.companion && status.companion.linked);
+
+  const placed = builder.layout.nodes;
+  const missing = builder.chain.filter((c) => !placed[c.key]);
+  if (missing.length && Object.keys(placed).length <= 1) {
+    // Nothing has ever been arranged — lay the whole chain out at once.
+    builder.layout = await api.layout_auto_arrange(status.nodes || [], builder.companion);
+    persistLayout();
+  } else if (missing.length) {
+    // Keep the user's arrangement and drop the newcomers into free space.
+    for (const item of missing) placed[item.key] = freshNode(item.module, item.bus_id);
+    persistLayout();
+  }
+  if (builder.companion && !Object.values(placed).some((n) => n.module === 'atom')) {
+    placed['atom:companion'] = freshNode('atom', 'companion');
+    persistLayout();
+  }
+
+  await refreshBuilderLayers();
+  renderCanvas();
+  renderInspector();
+}
+
+/** Ask the device for its editable key map, or find out why we cannot. */
+async function refreshBuilderLayers() {
+  const reply = await api.device_get_layers().catch(() => null);
+  if (!reply) { builder.editable = false; builder.layers = []; return; }
+  builder.editable = Boolean(reply.editable);
+  builder.layers = reply.layers || [];
+  builder.hint = reply.hint || reply.error || '';
+  if (builder.layerIndex >= Math.max(1, builder.layers.length)) builder.layerIndex = 0;
+}
+
+// ------------------------------------------------------------- placement --
+
+/** A new node at the first free grid slot, scanning in reading order. */
+function freshNode(module, busId) {
+  const spec = moduleSpec(module);
+  const [cols, rows] = builder.model.canvas_cells;
+  const [w, h] = spec.cells;
+  for (let y = 0; y + h <= rows; y += 1) {
+    for (let x = 0; x + w <= cols; x += 1) {
+      if (!overlapsAnything(x, y, w, h)) {
+        return { module, bus_id: busId, x, y, rotation: spec.rotations[0] };
+      }
+    }
+  }
+  return { module, bus_id: busId, x: 0, y: 0, rotation: spec.rotations[0] };
+}
+
+function overlapsAnything(x, y, w, h) {
+  return Object.values(builder.layout.nodes).some((node) => {
+    const spec = moduleSpec(node.module);
+    if (!spec) return false;
+    const [nw, nh] = spec.cells;
+    return x < node.x + nw && node.x < x + w && y < node.y + nh && node.y < y + h;
+  });
+}
+
+function clampCell(x, y, module) {
+  const [cols, rows] = builder.model.canvas_cells;
+  const spec = moduleSpec(module);
+  const [w, h] = spec ? spec.cells : [3, 3];
+  return [
+    Math.max(0, Math.min(Math.round(x), cols - w)),
+    Math.max(0, Math.min(Math.round(y), rows - h)),
+  ];
+}
+
+/** Save the canvas. Debounced: dragging a node fires this on every frame.
+ *  The normalised document that comes back is deliberately NOT adopted — the
+ *  user may have moved something else in the meantime, and the layout on screen
+ *  is the one they are looking at. */
+function persistLayout() {
+  clearTimeout(builder.saveTimer);
+  builder.saveTimer = setTimeout(async () => {
+    const r = await api.set_sidecar_layout(builder.layout)
+      .catch((err) => ({ ok: false, error: String(err) }));
+    if (!r.ok) toast(r.error || 'could not save the layout', 'bad');
+  }, 350);
+}
+
+// --------------------------------------------------------------- drawing --
+
+function renderCanvas() {
+  if (!builder.model || !builder.layout) return;
+  const canvas = $('#canvas');
+  const g = gridPx();
+  const [cols, rows] = builder.model.canvas_cells;
+  canvas.style.width = `${cols * g}px`;
+  canvas.style.height = `${rows * g}px`;
+  canvas.style.backgroundSize = `${g}px ${g}px`;
+
+  $$('.bnode', canvas).forEach((node) => node.remove());
+  for (const [key, node] of Object.entries(builder.layout.nodes)) {
+    canvas.append(nodeElement(key, node));
+  }
+  drawWires();
+  paintBuilderLayer();
+  updateBuilderFoot();
+}
+
+function nodeElement(key, node) {
+  const spec = moduleSpec(node.module);
+  const g = gridPx();
+  const [w, h] = nodeSize(node);
+  const detected = isDetected(key);
+
+  const wrap = el('div', {
+    class: `bnode${builder.selected === key ? ' is-selected' : ''}`
+         + `${detected ? '' : ' is-ghost'}`,
+    'data-key': key,
+    'data-module': node.module,
+    style: `left:${node.x * g}px; top:${node.y * g}px; width:${w}px; height:${h}px`,
+    title: detected ? spec.label : `${spec.label} — not detected`,
+  });
+
+  const rotated = el('div', {
+    class: 'bnode-rot', style: `transform: rotate(${node.rotation}deg)`,
+  }, el('img', { class: 'bnode-photo', src: `img/${spec.sprite}`, alt: '', draggable: 'false' }));
+  rotated.append(...liveOverlays(key, node));
+  wrap.append(rotated);
+
+  wrap.append(...portBadges(node, detected));
+  wrap.append(nameBadge(key, node, detected));
+  return wrap;
+}
+
+/** The little blue arrow the modules wear on their side faces.
+ *  `direction` is the screen vector the bus signal travels in. */
+function arrowGlyph(direction) {
+  const angle = Math.round(Math.atan2(direction[1], direction[0]) * 180 / Math.PI);
+  return svg('svg', { viewBox: '0 0 10 10' },
+    svg('path', { d: 'M2 1.2 L8.4 5 L2 8.8 Z', transform: `rotate(${angle} 5 5)` }));
+}
+
+/** An RGB indicator, as printed between IN and OUT on every Chain module. */
+function bulbGlyph() {
+  return svg('svg', { viewBox: '0 0 10 10' },
+    svg('path', { d: 'M5 1a2.6 2.6 0 0 1 1.7 4.6V7H3.3V5.6A2.6 2.6 0 0 1 5 1Z' }),
+    svg('rect', { x: 3.5, y: 7.8, width: 3, height: 1.4, rx: .6 }));
+}
+
+/** IN / OUT (and the DualKey's two ports) placed on the right edges.
+ *  These are positioned from the rotation rather than rotated with the node,
+ *  so "IN" never ends up upside down on a module mounted at 180. */
+function portBadges(node, detected) {
+  const [w, h] = nodeSize(node);
+  const inward = IN_NORMAL[node.rotation] || IN_NORMAL[0];
+  const flow = negate(inward);           // the way the signal travels
+  const at = (normal) => `left:${w / 2 + normal[0] * (w / 2)}px;`
+                       + `top:${h / 2 + normal[1] * (h / 2)}px;`
+                       + 'transform: translate(-50%, -50%)';
+
+  if (node.module === 'dualkey') {
+    // Both Chain ports are identical sockets; the firmware probes which one
+    // the bus came up on, so the labels describe roles, not connectors.
+    return [
+      el('span', { class: 'port', style: at(flow) }, arrowGlyph(flow), 'BUS'),
+      el('span', { class: 'port is-aux', style: at(inward) }, 'AUX'),
+      el('span', { class: 'mode-chip' }, 'BLE · OFF · USB'),
+    ];
+  }
+  if (node.module === 'atom') {
+    return [el('span', { class: 'port is-aux', style: at(inward) }, 'LINK')];
+  }
+
+  const badges = [
+    el('span', { class: 'port', style: at(inward) }, arrowGlyph(flow), 'IN'),
+    el('span', { class: 'port', style: at(flow) }, 'OUT', arrowGlyph(flow)),
+  ];
+  if (detected) {
+    // The bulb sits between IN and OUT on the real sticker; on the canvas it
+    // goes on the edge at right angles to the bus so it never collides.
+    const side = [inward[1], -inward[0]];
+    badges.push(el('span', { class: 'port is-rgb', style: at(side) }, bulbGlyph()));
+  }
+  return badges;
+}
+
+function nameBadge(key, node, detected) {
+  const spec = moduleSpec(node.module);
+  const kids = [];
+  if (node.module === 'dualkey') {
+    // The DualKey is the device, not a node on its bus: it has no id, and
+    // "not detected" would be a confusing way to say "nothing is plugged in".
+    const layer = deviceLayers()[state.activeLayer] || '';
+    kids.push(el('i', { class: 'layer-dot' }), spec.short);
+    if (layer) kids.push(el('span', { class: 'bus' }, layer));
+  } else if (node.module === 'atom') {
+    kids.push(spec.short);
+    if (!detected) kids.push(el('span', { class: 'bus' }, 'not linked'));
+  } else {
+    kids.push(spec.short,
+      el('span', { class: 'bus' }, detected ? `#${node.bus_id}` : 'not detected'));
+  }
+  return el('span', { class: 'bnode-name' }, kids);
+}
+
+/** Per-module overlay elements that the live device events light up. */
+function liveOverlays(key, node) {
+  switch (node.module) {
+    case 'dualkey':
+      return [
+        el('i', { class: 'hotspot', 'data-hot': 'key1',
+                  style: 'left:4%; top:8%; width:42%; height:80%' }),
+        el('i', { class: 'hotspot', 'data-hot': 'key2',
+                  style: 'left:54%; top:8%; width:42%; height:80%' }),
+      ];
+    case 'key':
+      return [el('i', { class: 'hotspot', 'data-hot': 'chain',
+                        style: 'left:10%; top:10%; width:80%; height:78%' })];
+    case 'joystick':
+      return [el('i', { class: 'hotspot', 'data-hot': `stick:${key}`,
+                        style: 'left:26%; top:24%; width:48%; height:48%; border-radius:50%' })];
+    case 'angle':
+      return [svg('svg', { class: 'knob-arc', viewBox: '0 0 100 100', 'data-arc': key },
+        svg('circle', { cx: 50, cy: 50, r: 34, 'stroke-dasharray': '0 214',
+                        transform: 'rotate(-90 50 50)' }))];
+    case 'mono':
+      return [el('i', { class: 'mono-state', 'data-mono': '1' })];
+    default:
+      return [];
+  }
+}
+
+function drawWires() {
+  const wires = $('#wires');
+  wires.replaceChildren();
+  const g = gridPx();
+  const [cols, rows] = builder.model.canvas_cells;
+  wires.setAttribute('viewBox', `0 0 ${cols * g} ${rows * g}`);
+  wires.setAttribute('width', cols * g);
+  wires.setAttribute('height', rows * g);
+
+  const dual = dualKeyEntry();
+  if (!dual) return;
+
+  let from = portPoint(dual.node, 'out');
+  for (const item of builder.chain) {
+    const node = builder.layout.nodes[item.key];
+    if (!node) continue;
+    const entry = portPoint(node, 'in');
+    const exit = portPoint(node, 'out');
+    wires.append(svg('path', { class: 'wire is-live', d: elbow(from, entry) }));
+    // The in→out leg runs under the photograph; it is drawn so a rotated
+    // module still reads as part of one continuous run.
+    wires.append(svg('path', { class: 'wire is-live', d: elbow(entry, exit) }));
+    from = exit;
+  }
+
+  const atom = Object.values(builder.layout.nodes).find((n) => n.module === 'atom');
+  if (atom) {
+    wires.append(svg('path', {
+      class: 'wire', d: elbow(portPoint(dual.node, 'in'), portPoint(atom, 'in')),
+    }));
+  }
+}
+
+/** Orthogonal two-bend connector between two points. */
+function elbow(a, b) {
+  const [x1, y1] = a;
+  const [x2, y2] = b;
+  if (Math.abs(y1 - y2) < 1.5) return `M${x1},${y1} L${x2},${y2}`;
+  const mid = (x1 + x2) / 2;
+  return `M${x1},${y1} L${mid},${y1} L${mid},${y2} L${x2},${y2}`;
+}
+
+function paintBuilderLayer() {
+  const colour = layerColour(state.activeLayer);
+  $$('#canvas .bnode-name .layer-dot').forEach((dot) => {
+    dot.style.background = colour;
+  });
+}
+
+function updateBuilderFoot() {
+  const total = Object.keys(builder.layout.nodes).length;
+  const detected = Object.keys(builder.layout.nodes).filter(isDetected).length;
+  const ghosts = total - detected;
+  const parts = [`${detected} module${detected === 1 ? '' : 's'} detected`];
+  if (ghosts) parts.push(`${ghosts} placed by hand`);
+  const note = builderCapability();
+  if (note) parts.push(note);
+  $('#builder-foot').textContent = parts.join(' · ');
+}
+
+/** One phrase for what the builder can and cannot do with this device. */
+function builderCapability() {
+  if (!state.device || !state.device.connected) return 'no device — arrangement only';
+  if (!builder.editable) return 'firmware 0.2 needed to edit actions';
+  return '';
+}
+
+// ----------------------------------------------------------- interaction --
+
+function initBuilderControls() {
+  if (builder.wired) return;
+  builder.wired = true;
+  const wrap = $('#canvas-wrap');
+  const canvas = $('#canvas');
+
+  canvas.addEventListener('pointerdown', onNodePointerDown);
+  wrap.addEventListener('pointerdown', onPanPointerDown);
+  wrap.addEventListener('keydown', onBuilderKey);
+
+  $('#btn-add-node').addEventListener('click', (event) => {
+    event.stopPropagation();  // or the document handler below closes it again
+    const picker = $('#node-picker');
+    const open = picker.classList.contains('hidden');
+    picker.classList.toggle('hidden', !open);
+    $('#btn-add-node').setAttribute('aria-expanded', String(open));
+  });
+  document.addEventListener('click', (event) => {
+    if (!event.target.closest('.picker-wrap')) {
+      $('#node-picker').classList.add('hidden');
+      $('#btn-add-node').setAttribute('aria-expanded', 'false');
+    }
+  });
+
+  $('#btn-auto-arrange').addEventListener('click', async () => {
+    builder.layout = await api.layout_auto_arrange(
+      (state.device && state.device.nodes) || [], builder.companion);
+    persistLayout();
+    renderCanvas();
+    renderInspector();
+    toast('Arranged in bus order', 'good');
+  });
+
+  $('#btn-clear-layout').addEventListener('click', async () => {
+    builder.layout = await api.layout_auto_arrange([], false);
+    builder.selected = null;
+    persistLayout();
+    renderCanvas();
+    renderInspector();
+  });
+}
+
+function buildNodePicker() {
+  const picker = $('#node-picker');
+  picker.replaceChildren();
+  for (const [module, spec] of Object.entries(builder.model.modules)) {
+    if (module === 'dualkey') continue;  // the origin, and there is only one
+    picker.append(el('button', {
+      class: 'picker-item', type: 'button', role: 'menuitem',
+      onclick: () => addNode(module),
+    }, el('img', { src: `img/${spec.sprite}`, alt: '' }), spec.label));
+  }
+}
+
+/** Place a module the device has not reported (yet).
+ *  It takes the lowest free bus id for its type, so when the real one turns
+ *  up with that id the placeholder simply becomes detected. */
+function addNode(module) {
+  const used = new Set(Object.values(builder.layout.nodes)
+    .filter((n) => n.module === module)
+    .map((n) => String(n.bus_id)));
+  let busId = module === 'atom' ? 'companion' : 1;
+  while (used.has(String(busId))) busId = Number(busId) + 1;
+  const key = `${module}:${busId}`;
+  if (builder.layout.nodes[key]) return;
+  builder.layout.nodes[key] = freshNode(module, busId);
+  builder.selected = key;
+  persistLayout();
+  renderCanvas();
+  renderInspector();
+  $('#node-picker').classList.add('hidden');
+}
+
+function removeNode(key) {
+  const node = builder.layout.nodes[key];
+  if (!node || node.module === 'dualkey') return;
+  if (isDetected(key)) {
+    toast('That module is plugged in — unplug it to take it off the canvas', '');
+    return;
+  }
+  delete builder.layout.nodes[key];
+  if (builder.selected === key) builder.selected = null;
+  persistLayout();
+  renderCanvas();
+  renderInspector();
+}
+
+function selectNode(key) {
+  if (builder.selected === key) return;
+  builder.selected = key;
+  $$('#canvas .bnode').forEach((node) =>
+    node.classList.toggle('is-selected', node.dataset.key === key));
+  renderInspector();
+}
+
+function onNodePointerDown(event) {
+  const target = event.target.closest('.bnode');
+  if (!target) return;
+  event.stopPropagation();
+  const key = target.dataset.key;
+  selectNode(key);
+  $('#canvas-wrap').focus({ preventScroll: true });
+
+  const node = builder.layout.nodes[key];
+  builder.dragging = {
+    key, el: target, pointerId: event.pointerId,
+    startX: event.clientX, startY: event.clientY,
+    originX: node.x, originY: node.y, moved: false,
+  };
+  // Capture keeps the drag alive if the pointer outruns the node. It can
+  // legitimately fail (a pointer that is already gone), and a drag that cannot
+  // be captured is still a drag.
+  try { target.setPointerCapture(event.pointerId); } catch { /* not fatal */ }
+  target.classList.add('is-dragging');
+  target.addEventListener('pointermove', onNodePointerMove);
+  target.addEventListener('pointerup', onNodePointerUp);
+  target.addEventListener('pointercancel', onNodePointerUp);
+}
+
+function onNodePointerMove(event) {
+  const drag = builder.dragging;
+  if (!drag || event.pointerId !== drag.pointerId) return;
+  const g = gridPx();
+  const node = builder.layout.nodes[drag.key];
+  const [x, y] = clampCell(
+    drag.originX + (event.clientX - drag.startX) / g,
+    drag.originY + (event.clientY - drag.startY) / g,
+    node.module,
+  );
+  if (x === node.x && y === node.y) return;
+  drag.moved = true;
+  node.x = x;
+  node.y = y;
+  drag.el.style.left = `${x * g}px`;
+  drag.el.style.top = `${y * g}px`;
+  drawWires();
+}
+
+function onNodePointerUp(event) {
+  const drag = builder.dragging;
+  if (!drag) return;
+  drag.el.classList.remove('is-dragging');
+  drag.el.removeEventListener('pointermove', onNodePointerMove);
+  drag.el.removeEventListener('pointerup', onNodePointerUp);
+  drag.el.removeEventListener('pointercancel', onNodePointerUp);
+  try { drag.el.releasePointerCapture(event.pointerId); } catch { /* already gone */ }
+  builder.dragging = null;
+  if (drag.moved) { persistLayout(); updateBuilderFoot(); }
+}
+
+/** Dragging the empty canvas pans it; the wrapper's own scrollbars do the work. */
+function onPanPointerDown(event) {
+  if (event.target.closest('.bnode')) return;
+  const wrap = $('#canvas-wrap');
+  wrap.focus({ preventScroll: true });
+  const start = {
+    x: event.clientX, y: event.clientY,
+    left: wrap.scrollLeft, top: wrap.scrollTop,
+  };
+  const move = (moveEvent) => {
+    wrap.scrollLeft = start.left - (moveEvent.clientX - start.x);
+    wrap.scrollTop = start.top - (moveEvent.clientY - start.y);
+  };
+  const up = () => {
+    wrap.classList.remove('is-panning');
+    window.removeEventListener('pointermove', move);
+    window.removeEventListener('pointerup', up);
+  };
+  wrap.classList.add('is-panning');
+  window.addEventListener('pointermove', move);
+  window.addEventListener('pointerup', up);
+}
+
+const NUDGE = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+
+function onBuilderKey(event) {
+  const key = builder.selected;
+  if (!key || !builder.layout.nodes[key]) return;
+  const node = builder.layout.nodes[key];
+
+  if (NUDGE[event.key]) {
+    event.preventDefault();
+    const [dx, dy] = NUDGE[event.key];
+    const [x, y] = clampCell(node.x + dx, node.y + dy, node.module);
+    if (x === node.x && y === node.y) return;
+    node.x = x;
+    node.y = y;
+    renderCanvas();
+    persistLayout();
+    return;
+  }
+  if (event.key === 'r' || event.key === 'R') {
+    event.preventDefault();
+    rotateNode(key, event.shiftKey ? -1 : 1);
+    return;
+  }
+  if (event.key === 'Delete' || event.key === 'Backspace') {
+    event.preventDefault();
+    removeNode(key);
+  }
+}
+
+// --------------------------------------------------------- orientation ----
+
+function rotateNode(key, direction) {
+  const node = builder.layout.nodes[key];
+  const spec = moduleSpec(node.module);
+  const list = spec.rotations;
+  const at = Math.max(0, list.indexOf(node.rotation));
+  const step = direction < 0 ? list.length - 1 : 1;
+  return setNodeRotation(key, list[(at + step) % list.length]);
+}
+
+/** Turn a module on the canvas and tell the firmware which way it now faces.
+ *  The truth table lives in fethr.core.layout.orientation_settings(). */
+async function setNodeRotation(key, rotation) {
+  const node = builder.layout.nodes[key];
+  if (!node || node.rotation === rotation) return;
+  node.rotation = rotation;
+  renderCanvas();
+  renderInspector();
+  persistLayout();
+
+  const result = await api
+    .device_apply_orientation(node.module, rotation, roleFor(key))
+    .catch((err) => ({ ok: false, error: String(err) }));
+
+  if (!result.ok) {
+    if (state.device && state.device.connected) {
+      toast(result.error || 'the device refused the orientation', 'bad');
+    }
+    return;
+  }
+  const applied = result.applied || {};
+  if (Object.keys(applied).length) {
+    for (const [path, value] of Object.entries(applied)) writeLocalConfig(path, value);
+    renderDeviceConfig();
+    markDirty(true);
+  }
+  if ((result.dropped || []).length) {
+    toast(`This firmware cannot store ${result.dropped.join(', ')} — needs 0.2`, '');
+  }
+}
+
+// ------------------------------------------------------------- inspector --
+
+function renderInspector() {
+  const box = $('#inspector');
+  if (!box) return;
+  box.replaceChildren();
+  if (!builder.model || !builder.layout) return;
+
+  const key = builder.selected;
+  const node = key ? builder.layout.nodes[key] : null;
+  if (!node) {
+    box.append(el('p', { class: 'empty' },
+      'Select a module on the canvas to place it and remap its keys.'));
+    return;
+  }
+
+  const spec = moduleSpec(node.module);
+  const role = roleFor(key);
+  const detected = isDetected(key);
+  box.append(el('h3', {}, spec.label));
+  box.append(el('p', { class: 'sub' }, detected
+    ? `Bus id ${node.bus_id}${role ? ` · ${role} stick` : ''}`
+    : 'Not detected — placed by hand'));
+
+  box.append(orientationSection(key, node, spec));
+
+  const slots = slotsFor(node.module, role);
+  const modeField = modeFieldFor(node.module, role);
+  if (!slots.length && !modeField) {
+    box.append(el('div', { class: 'insp-section' },
+      el('h4', {}, 'Bindings'),
+      el('p', { class: 'muted small' }, informational(node.module))));
+    return;
+  }
+
+  if (!builder.editable) {
+    box.append(el('div', { class: 'insp-hint' },
+      builder.hint || 'Editing what the keys do needs firmware 0.2.'));
+  }
+  box.append(layerTabs());
+  box.append(layerSection(modeField));
+  for (const slot of slots) box.append(slotSection(slot));
+}
+
+function informational(module) {
+  if (module === 'atom') {
+    return 'The companion display renders whatever the sidecar sends it; '
+         + 'it holds no key map of its own.';
+  }
+  if (module === 'mono') {
+    return 'The 8×8 panel shows the layer letter and the engine state. '
+         + 'Its brightness and idle behaviour are on the Settings tab.';
+  }
+  return 'This module has no bindable controls.';
+}
+
+function orientationSection(key, node, spec) {
+  const section = el('div', { class: 'insp-section' }, el('h4', {}, 'Orientation'));
+  const row = el('div', { class: 'rot-row' });
+  for (const angle of spec.rotations) {
+    row.append(el('button', {
+      class: `rot-btn${node.rotation === angle ? ' is-active' : ''}`,
+      type: 'button',
+      onclick: () => setNodeRotation(key, angle),
+    }, `${angle}°`));
+  }
+  section.append(row);
+
+  const note = {
+    dualkey: '180° is USB away from you, which swaps Key 1 and Key 2.',
+    joystick: 'The stick’s axes follow the module, so "up" stays up.',
+    mono: 'The panel rotates its glyphs to match.',
+  }[node.module];
+  if (note) section.append(el('p', { class: 'muted small', style: 'margin:8px 0 0' }, note));
+  if (node.module !== 'dualkey') {
+    section.append(el('div', { class: 'actions', style: 'margin-top:8px' },
+      el('button', {
+        class: 'btn btn-ghost', type: 'button', onclick: () => removeNode(key),
+        disabled: isDetected(key) ? '' : null,
+        title: isDetected(key) ? 'Unplug it to take it off the canvas' : null,
+      }, 'Remove from canvas')));
+  }
+  return section;
+}
+
+function layerTabs() {
+  const names = builder.layers.length
+    ? builder.layers.map((layer) => layer.name)
+    : deviceLayers();
+  const row = el('div', { class: 'layer-tabs' });
+  names.forEach((name, index) => {
+    const layer = builder.layers[index];
+    const colour = layer && layer.rgb ? rgbToHex(layer.rgb) : layerColour(index);
+    row.append(el('button', {
+      class: `layer-tab${index === builder.layerIndex ? ' is-active' : ''}`,
+      type: 'button', style: `--layer:${colour}`,
+      onclick: () => { builder.layerIndex = index; renderInspector(); },
+    }, el('i', { class: 'layer-dot' }), name));
+  });
+  return row;
+}
+
+/** Which layer-level mode dropdown, if any, belongs to this module. */
+function modeFieldFor(module, role) {
+  if (module === 'joystick') return role === 'scroll' ? 'scroll_mode' : 'nav_mode';
+  if (module === 'angle') return 'angle_mode';
+  return null;
+}
+
+function currentLayer() {
+  return builder.layers[builder.layerIndex] || null;
+}
+
+/** Layer name and colour, plus the one control mode this module owns.
+ *  All three are `set_layer_meta` fields, so they share a section. */
+function layerSection(modeField) {
+  const layer = currentLayer();
+  const section = el('div', { class: 'insp-section' }, el('h4', {}, 'This layer'));
+  section.append(layerMetaRow(layer));
+
+  if (!modeField) return section;
+  const vocab = builder.model.vocabulary;
+  const choices = vocab[`${modeField.replace('_mode', '')}_modes`] || [];
+  const select = el('select', { disabled: builder.editable ? null : '' },
+    ...choices.map((choice) => el('option', { value: choice.id }, choice.label)));
+  if (layer && layer[modeField]) select.value = layer[modeField];
+  select.addEventListener('change', async () => {
+    const r = await api
+      .device_set_layer_meta(builder.layerIndex, { [modeField]: select.value })
+      .catch((err) => ({ ok: false, error: String(err) }));
+    if (!r.ok) { toast(r.error || 'the device refused that mode', 'bad'); return; }
+    if (layer) layer[modeField] = select.value;
+    markDirty(true);
+  });
+  section.append(el('label', { class: 'field' },
+    el('span', {}, modeField === 'angle_mode' ? 'Knob mode' : 'Stick mode'), select));
+  return section;
+}
+
+/** Layer name + colour, editable on protocol 2. */
+function layerMetaRow(layer) {
+  const row = el('div', { class: 'row-2' });
+  const name = el('input', {
+    type: 'text', maxlength: '8', disabled: builder.editable ? null : '',
+    value: layer ? layer.name : (deviceLayers()[builder.layerIndex] || ''),
+  });
+  const colour = el('input', {
+    type: 'color', disabled: builder.editable ? null : '',
+    value: layer && layer.rgb ? rgbToHex(layer.rgb) : layerColour(builder.layerIndex),
+  });
+  const push = async (fields) => {
+    const r = await api.device_set_layer_meta(builder.layerIndex, fields)
+      .catch((err) => ({ ok: false, error: String(err) }));
+    if (!r.ok) { toast(r.error || 'the device refused that change', 'bad'); return; }
+    Object.assign(layer || {}, fields);
+    markDirty(true);
+    renderInspector();
+  };
+  // 1-8 characters, refused rather than truncated (PROTOCOL.md §Actions), so
+  // put the limit on the field and do not send an empty one.
+  name.addEventListener('change', () => {
+    const value = name.value.trim();
+    if (!value) { renderInspector(); return; }   // put the old name back
+    push({ name: value });
+  });
+  colour.addEventListener('change', () => push({ rgb: hexToRgb(colour.value) }));
+  row.append(
+    el('label', { class: 'field' }, el('span', {}, 'Layer name'), name),
+    el('label', { class: 'field' }, el('span', {}, 'Layer colour'), colour));
+  return row;
+}
+
+const NO_ACTION = { type: 'none', key: '', mods: [], fn: 'custom' };
+
+/** One slot's editor: type, key, modifiers, function class, Apply. */
+function slotSection(slot) {
+  const vocab = builder.model.vocabulary;
+  const layer = currentLayer();
+  const bound = (layer && layer.actions && layer.actions[slot]) || NO_ACTION;
+  const draft = { ...NO_ACTION, ...bound, mods: [...(bound.mods || [])] };
+  const disabled = builder.editable ? null : '';
+
+  const section = el('div', { class: 'slot' });
+  const dot = el('i', { class: 'fn-dot' });
+  const summary = el('span', { class: 'summary' });
+  section.append(el('div', { class: 'slot-head' }, dot,
+    vocab.slots[slot] || slot, summary));
+
+  const typeSelect = el('select', { disabled },
+    ...vocab.types.map((type) => el('option', { value: type.id }, type.label)));
+  typeSelect.value = draft.type;
+  section.append(el('label', { class: 'field' }, el('span', {}, 'Does'), typeSelect));
+
+  const search = el('input', { type: 'text', placeholder: 'search keys…', disabled });
+  const list = el('div', { class: 'key-list' });
+  const keyBox = el('div', { class: 'key-search' },
+    el('label', { class: 'field' }, el('span', {}, 'Key'), search), list);
+  section.append(keyBox);
+
+  const mods = el('div', { class: 'mods' });
+  for (const modifier of vocab.modifiers) {
+    const input = el('input', { type: 'checkbox', disabled });
+    input.checked = draft.mods.includes(modifier.id);
+    input.addEventListener('change', () => {
+      draft.mods = input.checked
+        ? [...draft.mods, modifier.id]
+        : draft.mods.filter((m) => m !== modifier.id);
+      refresh();
+    });
+    mods.append(el('label', {}, input, modifier.label));
+  }
+  section.append(mods);
+
+  const fnSelect = el('select', { disabled },
+    ...vocab.fn_classes.map((fn) => el('option', { value: fn.id }, fn.label)));
+  fnSelect.value = draft.fn;
+  section.append(el('label', { class: 'field' }, el('span', {}, 'Looks like'), fnSelect));
+
+  const apply = el('button', { class: 'btn btn-primary', type: 'button', disabled },
+    'Apply');
+  section.append(el('div', { class: 'actions' }, apply));
+
+  const keysFor = () =>
+    (vocab.types.find((type) => type.id === draft.type) || { keys: [] }).keys;
+
+  function drawKeys() {
+    const needle = search.value.trim().toLowerCase();
+    const options = keysFor().filter((name) =>
+      !needle || name.includes(needle) || (vocab.key_labels[name] || '').toLowerCase().includes(needle));
+    list.replaceChildren();
+    if (!keysFor().length) {
+      list.append(el('div', { class: 'none' }, 'This action needs no key.'));
+      return;
+    }
+    if (!options.length) {
+      list.append(el('div', { class: 'none' }, 'Nothing matches.'));
+      return;
+    }
+    for (const name of options) {
+      list.append(el('button', {
+        class: `key-option${name === draft.key ? ' is-chosen' : ''}`,
+        type: 'button', disabled,
+        onclick: () => { draft.key = name; refresh(); },
+      }, vocab.key_labels[name] || name));
+    }
+  }
+
+  function refresh() {
+    const palette = (builder.model.vocabulary.fn_classes
+      .find((fn) => fn.id === draft.fn) || {}).palette;
+    dot.style.background = palette ? fnColour(palette) : 'var(--muted)';
+    summary.textContent = describeAction(draft);
+    keyBox.classList.toggle('hidden', !keysFor().length);
+    mods.classList.toggle('hidden',
+      draft.type !== 'key_hold' && draft.type !== 'key_tap');
+    drawKeys();
+  }
+
+  typeSelect.addEventListener('change', () => {
+    draft.type = typeSelect.value;
+    if (!keysFor().includes(draft.key)) draft.key = '';
+    refresh();
+  });
+  fnSelect.addEventListener('change', () => { draft.fn = fnSelect.value; refresh(); });
+  search.addEventListener('input', drawKeys);
+
+  apply.addEventListener('click', async () => {
+    const r = await api.device_set_action(builder.layerIndex, slot, draft)
+      .catch((err) => ({ ok: false, error: String(err) }));
+    if (!r.ok) { toast(r.error || 'the device refused that binding', 'bad'); return; }
+    if (layer) layer.actions = { ...(layer.actions || {}), [slot]: r.action || draft };
+    markDirty(true);
+    toast(`${vocab.slots[slot] || slot} → ${describeAction(draft)}`, 'good');
+  });
+
+  refresh();
+  return section;
+}
+
+function describeAction(action) {
+  if (!action || action.type === 'none' || !action.key) return 'unbound';
+  const mods = (action.mods || []).map((m) => (m === 'gui' ? 'Win' : m));
+  const label = (builder.model.vocabulary.key_labels || {})[action.key] || action.key;
+  return [...mods, label].join('+');
+}
+
+// ------------------------------------------------------- live overlay ----
+// The canvas mirrors what the device is doing, using the same events the
+// panel does. None of it touches the stored layout.
+
+function hotspotsFor(tapKey) {
+  const dual = dualKeyEntry();
+  if (tapKey === '1' || tapKey === '2') {
+    return dual ? $$(`[data-key="${dual.key}"] [data-hot="key${tapKey}"]`) : [];
+  }
+  if (tapKey === 'chain' || tapKey === 'chain2') return $$('[data-hot="chain"]');
+  if (tapKey === 'nav' || tapKey === 'scroll') {
+    const entry = builder.chain.find((c) => c.role === tapKey);
+    return entry ? $$(`[data-hot="stick:${entry.key}"]`) : [];
+  }
+  return [];
+}
+
+function builderHold(key, active) {
+  for (const spot of hotspotsFor(String(key))) {
+    spot.classList.toggle('is-held', Boolean(active));
+  }
+}
+
+function builderTap(key) {
+  for (const spot of hotspotsFor(String(key))) {
+    spot.classList.remove('is-tapped');
+    void spot.offsetWidth;  // restart the animation
+    spot.classList.add('is-tapped');
+  }
+}
+
+/** Draw the knob's position as an arc on the Angle module. */
+function builderKnob(detent, of) {
+  const total = Number(of) || 24;
+  const fraction = Math.max(0, Math.min(1, (Number(detent) || 0) / Math.max(1, total - 1)));
+  const circumference = 2 * Math.PI * 34;
+  for (const arc of $$('.knob-arc')) {
+    const circle = $('circle', arc);
+    if (!circle) continue;
+    circle.setAttribute('stroke-dasharray',
+      `${(fraction * circumference).toFixed(1)} ${circumference.toFixed(1)}`);
+    arc.classList.add('is-live');
+    clearTimeout(arc._fadeTimer);
+    arc._fadeTimer = setTimeout(() => arc.classList.remove('is-live'), 1400);
+  }
+}
+
+const MONO_GLYPH = {
+  recording: ['●', 'is-recording is-busy'],
+  transcribing: ['◐', 'is-busy'],
+  cleaning: ['◑', 'is-busy'],
+  pasted: ['✓', 'is-pasted'],
+  error: ['✗', 'is-error'],
+};
+
+/** Mirror the engine state onto the Mono panel, as the device itself does. */
+function builderState(name) {
+  const [glyph, kind] = MONO_GLYPH[name] || ['', ''];
+  for (const panel of $$('[data-mono]')) {
+    panel.className = `mono-state ${kind}${glyph ? ' is-live' : ''}`;
+    panel.textContent = glyph;
+  }
 }
 
 // Audio
@@ -817,6 +1845,7 @@ window.fethrEvent = function fethrEvent(event) {
   switch (event.type) {
     case 'state':
       setStatePill(event.state, event.detail);
+      builderState(event.state);
       break;
     case 'transcript':
       $('#last-transcript').value = event.final;
@@ -843,6 +1872,13 @@ function handleDeviceEvent(ev) {
       break;
     case 'hold':
       pulseKey(ev.key, ev.active);
+      builderHold(ev.key, ev.active);
+      break;
+    case 'tap':
+      builderTap(ev.key);
+      break;
+    case 'knob':
+      builderKnob(ev.detent, ev.of);
       break;
     case 'battery':
       state.device.vbat_mv = ev.vbat_mv;
@@ -850,6 +1886,10 @@ function handleDeviceEvent(ev) {
       break;
     case 'chain':
       refreshDevice();
+      break;
+    case 'layout_changed':
+      // Another client edited the key map; re-read it rather than guess.
+      refreshBuilderLayers().then(renderInspector);
       break;
     case 'connected':
     case 'disconnected':
@@ -880,6 +1920,7 @@ async function boot() {
   if (booted) return;
   booted = true;
   initNav();
+  initTabs();
   initTheme();
   initSettingsInputs();
   initHotkeyCapture();
@@ -901,6 +1942,7 @@ async function boot() {
     $('#about-path').textContent = info.settings_path;
     renderStatus(await api.get_status());
     renderLastTranscript(await api.get_engine_state());
+    await builderBoot();
     await refreshDevice();
     await refreshAudio();
   } catch (err) {

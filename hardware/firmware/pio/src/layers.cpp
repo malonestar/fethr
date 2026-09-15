@@ -6,25 +6,33 @@
  * Fields are positional - keep the comments aligned when editing.
  * Action literal layout: { type, code, mods, fn }
  *
- * The COLOURS in this file (both LAYERS[].r/g/b and FN_RGB) are DEFAULTS.
- * settings.cpp copies them into g_cfg at boot and fnColor() reads g_cfg, so
- * the host can repaint anything at run time without a reflash. The bindings
- * themselves - which key does what - remain compile-time data.
+ * The COLOURS in this file (both DEFAULT_LAYERS[].r/g/b and FN_RGB) are
+ * DEFAULTS. settings.cpp copies them into g_cfg at boot and fnColor() reads
+ * g_cfg, so the host can repaint anything at run time without a reflash.
+ * Since 0.2.0 the BINDINGS work the same way - see below.
  *
- * SCOPE: FLOW is the only layer built by default. MEDIA/EDIT/MOUSE are
- * complete but have not been exercised on hardware, so they sit behind
- * FLOW_EXTRA_LAYERS (config.h). Everything that walks the table reads
- * LAYER_COUNT, so turning the flag on is the whole change.
+ * 0.2.0: THE TABLE BELOW IS NO LONGER WHAT THE FIRMWARE READS.
+ * It is `DEFAULT_LAYERS`, the seed. settings.cpp copies it into
+ * g_cfg.layers[] at boot, `set_action` / `set_layer_meta` edit that copy, and
+ * the NVS blob persists it. Every reader goes through layerAt() / layerCount()
+ * so there is exactly one runtime source of truth; the compile-time table only
+ * decides what a factory-default device comes up with.
+ *
+ * SCOPE: all four defaults are always compiled. FLOW_EXTRA_LAYERS (config.h)
+ * says how many of them a factory-default device seeds - 4 for the shipped
+ * image, 1 for the original FLOW-only build.
  */
 
 #include "settings.h"
 
+#include "keynames.h"
+
 #include <stdio.h>
 #include <string.h>
 
-const LayerConfig LAYERS[] = {
+const LayerConfig DEFAULT_LAYERS[] = {
     /* =============== Layer 0: FLOW (default) =============== */
-    {"FLOW",
+    {"FETHR",
      0, 90, 255, /* blue */
      G_F,
      {ACT_KEY_HOLD, KEY_F8, MOD_NONE, FN_DICT_RAW},   /* Key1 hold -> raw dictation     */
@@ -37,7 +45,6 @@ const LayerConfig LAYERS[] = {
      {ACT_MOUSE_BTN, MOUSE_MIDDLE, MOD_NONE, FN_MOUSE_M},
      ANGLE_VOLUME},
 
-#if FLOW_EXTRA_LAYERS
     /* =============== Layer 1: MEDIA =============== */
     {"MEDIA",
      255, 110, 0, /* amber */
@@ -81,16 +88,80 @@ const LayerConfig LAYERS[] = {
      SCROLL_WHEEL_PAN,
      {ACT_MOUSE_BTN, MOUSE_MIDDLE, MOD_NONE, FN_MOUSE_M},
      ANGLE_WHEEL},
-#endif /* FLOW_EXTRA_LAYERS */
 };
 
-const uint8_t LAYER_COUNT = (uint8_t)(sizeof(LAYERS) / sizeof(LAYERS[0]));
+const uint8_t DEFAULT_LAYER_COUNT =
+    (uint8_t)(sizeof(DEFAULT_LAYERS) / sizeof(DEFAULT_LAYERS[0]));
 
-/* RuntimeConfig::layer_rgb is sized by FLOW_MAX_LAYERS and is part of the NVS
- * blob layout, so growing the table above without bumping both that constant
- * and FLOW_CFG_VERSION would silently drop a layer's colour. */
-static_assert(sizeof(LAYERS) / sizeof(LAYERS[0]) <= FLOW_MAX_LAYERS,
-              "LAYER_COUNT exceeds FLOW_MAX_LAYERS - bump it and FLOW_CFG_VERSION");
+/* RuntimeConfig::layers and ::layer_rgb are both sized by FLOW_MAX_LAYERS and
+ * are part of the NVS blob layout, so growing the table above without bumping
+ * that constant and FLOW_CFG_VERSION would silently drop a layer. */
+static_assert(sizeof(DEFAULT_LAYERS) / sizeof(DEFAULT_LAYERS[0]) <= FLOW_MAX_LAYERS,
+              "DEFAULT_LAYER_COUNT exceeds FLOW_MAX_LAYERS - bump it and FLOW_CFG_VERSION");
+
+/* FLOW_EXTRA_LAYERS changed meaning in 0.2.0: it is a COUNT now, not a
+ * boolean. The old `0` would have seeded an empty table, so fail the build
+ * rather than let it through. */
+static_assert(FLOW_EXTRA_LAYERS >= 1 && FLOW_EXTRA_LAYERS <= FLOW_MAX_LAYERS,
+              "FLOW_EXTRA_LAYERS is now a layer COUNT (1..FLOW_MAX_LAYERS), not a flag");
+
+/* Every layer name must survive the copy into LayerRuntime::name, which is the
+ * protocol's 8-character limit. Checked at compile time so a long default can
+ * never be silently truncated on the way into NVS. */
+static_assert(sizeof("FETHR") <= FLOW_LAYER_NAME_MAX + 1 &&
+                  sizeof("MEDIA") <= FLOW_LAYER_NAME_MAX + 1 &&
+                  sizeof("EDIT") <= FLOW_LAYER_NAME_MAX + 1 &&
+                  sizeof("MOUSE") <= FLOW_LAYER_NAME_MAX + 1,
+              "a default layer name is longer than FLOW_LAYER_NAME_MAX");
+
+/* ================================================================== */
+/* The runtime table                                                   */
+/* ================================================================== */
+
+/*
+ * layerAt() is THE accessor: every `LAYERS[x]` in the firmware became one of
+ * these. Clamping here rather than at ~40 call sites is what lets a caller
+ * pass g_layer without a bounds check, and it is also why g_cfg being
+ * zero-initialised before settingsBegin() is harmless - index 0 is always
+ * inside the array, it is just blank.
+ */
+const LayerRuntime &layerAt(uint8_t index)
+{
+  if (index >= g_cfg.layer_count) index = 0;
+  return g_cfg.layers[index];
+}
+
+uint8_t layerCount(void) { return g_cfg.layer_count; }
+
+void layerDefaultInto(uint8_t index, LayerRuntime &out)
+{
+  memset(&out, 0, sizeof(out));
+  if (index >= DEFAULT_LAYER_COUNT) return;
+
+  const LayerConfig &L = DEFAULT_LAYERS[index];
+  snprintf(out.name, sizeof(out.name), "%s", L.name);
+  out.glyph            = L.glyph;
+  out.key1             = L.key1;
+  out.key2             = L.key2;
+  out.chain_key        = L.chain_key;
+  out.chain_key_double = L.chain_key_double;
+  out.nav_click        = L.nav_click;
+  out.scroll_click     = L.scroll_click;
+  out.nav_mode         = L.nav_mode;
+  out.scroll_mode      = L.scroll_mode;
+  out.angle_mode       = L.angle_mode;
+}
+
+void layerDefaultRgb(uint8_t index, uint8_t out_rgb[3])
+{
+  if (index >= DEFAULT_LAYER_COUNT) {
+    out_rgb[0] = out_rgb[1] = out_rgb[2] = 0;
+    return;
+  }
+  out_rgb[0] = DEFAULT_LAYERS[index].r;
+  out_rgb[1] = DEFAULT_LAYERS[index].g;
+  out_rgb[2] = DEFAULT_LAYERS[index].b;
+}
 
 /* ================================================================== */
 /* Layer -> colour                                                     */
@@ -101,7 +172,7 @@ static_assert(sizeof(LAYERS) / sizeof(LAYERS[0]) <= FLOW_MAX_LAYERS,
  * whether or not the local WS2812s are compiled in. */
 void layerRgb(uint8_t layer, uint8_t out_rgb[3])
 {
-  if (layer >= LAYER_COUNT) layer = 0;
+  if (layer >= g_cfg.layer_count) layer = 0;
   out_rgb[0] = g_cfg.layer_rgb[layer][0];
   out_rgb[1] = g_cfg.layer_rgb[layer][1];
   out_rgb[2] = g_cfg.layer_rgb[layer][2];
@@ -186,6 +257,125 @@ uint8_t fnByName(const char *name)
     if (FN_NAME[f] != NULL && strcmp(FN_NAME[f], name) == 0) return f;
   }
   return FN_NONE;
+}
+
+/* ================================================================== */
+/* Function -> proto-2 class name                                      */
+/* ================================================================== */
+
+/*
+ * The lower-case spelling `get_layers` / `set_action` use. Index order MUST
+ * match enum FnId. FN_NONE is "custom" here rather than absent: an editable
+ * action needs a way to say "no opinion about the colour", and the protocol's
+ * word for that is `custom`.
+ */
+static const char *const FN_CLASS[FN_COUNT] = {
+    "custom",     /* FN_NONE       */
+    "dict_raw",   /* FN_DICT_RAW   */
+    "dict_clean", /* FN_DICT_CLEAN */
+    "repaste",    /* FN_REPASTE    */
+    "media",      /* FN_MEDIA      */
+    "undo",       /* FN_UNDO       */
+    "redo",       /* FN_REDO       */
+    "mouse_l",    /* FN_MOUSE_L    */
+    "mouse_r",    /* FN_MOUSE_R    */
+    "mouse_m",    /* FN_MOUSE_M    */
+    "enter",      /* FN_ENTER      */
+};
+
+const char *fnClassName(uint8_t fn)
+{
+  if (fn >= (uint8_t)FN_COUNT) return FN_CLASS[FN_NONE];
+  return FN_CLASS[fn];
+}
+
+/* Case-insensitive, which also means the upper-case v1 spelling ("DICT_RAW")
+ * is accepted here - the two vocabularies differ only in case. */
+static bool classEq(const char *a, const char *b)
+{
+  if (a == NULL || b == NULL) return false;
+  for (; *a != '\0' && *b != '\0'; a++, b++) {
+    char ca = (*a >= 'A' && *a <= 'Z') ? (char)(*a - 'A' + 'a') : *a;
+    char cb = (*b >= 'A' && *b <= 'Z') ? (char)(*b - 'A' + 'a') : *b;
+    if (ca != cb) return false;
+  }
+  return *a == *b;
+}
+
+bool fnClassByName(const char *name, uint8_t *out)
+{
+  if (name == NULL) return false;
+  for (uint8_t f = 0; f < (uint8_t)FN_COUNT; f++) {
+    if (classEq(FN_CLASS[f], name)) {
+      if (out != NULL) *out = f;
+      return true;
+    }
+  }
+  return false;
+}
+
+/* ================================================================== */
+/* Per-layer mode names (wire format)                                  */
+/* ================================================================== */
+
+const char *navModeName(uint8_t mode)
+{
+  switch (mode) {
+    case NAV_ARROWS: return "arrows";
+    case NAV_MOUSE:  return "mouse";
+    default:         return "off";
+  }
+}
+
+const char *scrollModeName(uint8_t mode)
+{
+  switch (mode) {
+    case SCROLL_WHEEL_PAN:    return "wheel_pan";
+    case SCROLL_WHEEL_ARROWS: return "wheel_arrows";
+    default:                  return "off";
+  }
+}
+
+const char *angleModeName(uint8_t mode)
+{
+  switch (mode) {
+    case ANGLE_VOLUME: return "volume";
+    case ANGLE_WHEEL:  return "wheel";
+    default:           return "off";
+  }
+}
+
+bool navModeByName(const char *name, uint8_t *out)
+{
+  uint8_t v;
+  if (classEq(name, "off")) v = NAV_OFF;
+  else if (classEq(name, "arrows")) v = NAV_ARROWS;
+  else if (classEq(name, "mouse")) v = NAV_MOUSE;
+  else return false;
+  if (out != NULL) *out = v;
+  return true;
+}
+
+bool scrollModeByName(const char *name, uint8_t *out)
+{
+  uint8_t v;
+  if (classEq(name, "off")) v = SCROLL_OFF;
+  else if (classEq(name, "wheel_pan")) v = SCROLL_WHEEL_PAN;
+  else if (classEq(name, "wheel_arrows")) v = SCROLL_WHEEL_ARROWS;
+  else return false;
+  if (out != NULL) *out = v;
+  return true;
+}
+
+bool angleModeByName(const char *name, uint8_t *out)
+{
+  uint8_t v;
+  if (classEq(name, "off")) v = ANGLE_OFF;
+  else if (classEq(name, "volume")) v = ANGLE_VOLUME;
+  else if (classEq(name, "wheel")) v = ANGLE_WHEEL;
+  else return false;
+  if (out != NULL) *out = v;
+  return true;
 }
 
 /* ================================================================== */
@@ -279,6 +469,23 @@ const char *actionLabel(const Action &a)
       break;
   }
 
+  /*
+   * fn = FN_NONE on a BOUND action is the proto-2 `custom` class, and
+   * PROTOCOL.md says its legend shows the key name - which is the only thing
+   * left that describes it. FN_LABEL's "-" is still right for ACT_NONE, which
+   * returned above.
+   *
+   * The name has to be built, so it lands in a file-static scratch buffer.
+   * Safe because every caller - legendKeyRow() and companionEventTap() -
+   * formats the result into its own storage before the next call; nothing
+   * holds an actionLabel() pointer across one.
+   */
+  if (a.fn == FN_NONE) {
+    static char scratch[FLOW_KEYNAME_MAX + 1];
+    if (actionToKeyName(a, scratch, sizeof(scratch)) && scratch[0] != '\0') return scratch;
+    return "-";
+  }
+
   if (a.fn < (uint8_t)FN_COUNT) return FN_LABEL[a.fn];
   return "-";
 }
@@ -322,7 +529,7 @@ static const char *angleRoleLabel(uint8_t mode)
  * COMPANION_LEGEND_MAX and what the companion's 6-pixel font fits across the
  * panel. A control that does nothing on this layer drops out of the line
  * entirely rather than printing a dash nobody can decode. */
-static void legendFooter(const LayerConfig &L, char *out, size_t n)
+static void legendFooter(const LayerRuntime &L, char *out, size_t n)
 {
   const char *nav   = navRoleLabel(L.nav_mode);
   const char *angle = angleRoleLabel(L.angle_mode);
@@ -342,9 +549,9 @@ void layerLegend(uint8_t layer, uint8_t slot, char *out, size_t out_len)
 {
   if (out == NULL || out_len == 0) return;
   out[0] = '\0';
-  if (layer >= LAYER_COUNT) return;
+  if (layer >= layerCount()) return;
 
-  const LayerConfig &L = LAYERS[layer];
+  const LayerRuntime &L = layerAt(layer);
   switch (slot) {
     case 0: legendKeyRow(L.key1, "K1", out, out_len); break;
     case 1: legendKeyRow(L.key2, "K2", out, out_len); break;

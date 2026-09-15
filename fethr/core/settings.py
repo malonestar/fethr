@@ -104,6 +104,11 @@ class SidecarSettings:
     auto_connect: bool = True
     #: Show a toast/Mono message when a transcript is pasted.
     notify_on_paste: bool = False
+    #: Chain-builder canvas: where each module sits and which way it faces.
+    #: A whole document rather than a field per node, because the set of nodes
+    #: is whatever is plugged in. Shape and validation live in
+    #: :mod:`fethr.core.layout`; ``{}`` means "never arranged".
+    layout: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -178,7 +183,7 @@ class Settings:
 
     def update(self, patch: dict[str, Any]) -> "Settings":
         """Apply a nested or dotted ``patch`` dict in place and return self."""
-        for key, value in _flatten(patch):
+        for key, value in _flatten(patch, target=self):
             try:
                 self.set_path(key, value)
             except (KeyError, AttributeError):
@@ -369,13 +374,24 @@ def _coerce(value: Any, declared: Any) -> Any:
     return value
 
 
-def _flatten(patch: dict[str, Any], prefix: str = "") -> list[tuple[str, Any]]:
-    """Turn a nested dict into ``[(dotted_path, value), ...]``."""
+def _flatten(
+    patch: dict[str, Any], prefix: str = "", target: Any = None
+) -> list[tuple[str, Any]]:
+    """Turn a nested dict into ``[(dotted_path, value), ...]``.
+
+    Descends only into sections that really are nested dataclasses.  Some
+    settings *are* dicts — ``sidecar.layout`` is a whole document — and
+    flattening one of those would turn a single assignment into a pile of
+    dotted paths that name nothing.  With no ``target`` to check against
+    (a bare call), every dict is treated as a section, which is the old
+    behaviour and fine for hand-written patches.
+    """
     out: list[tuple[str, Any]] = []
     for key, value in patch.items():
         path = f"{prefix}{key}"
-        if isinstance(value, dict):
-            out.extend(_flatten(value, prefix=f"{path}."))
+        child = getattr(target, key, None) if target is not None else None
+        if isinstance(value, dict) and (target is None or is_dataclass(child)):
+            out.extend(_flatten(value, prefix=f"{path}.", target=child))
         else:
             out.append((path, value))
     return out

@@ -42,8 +42,13 @@
 /* 'F','S','C','1' - a sanity check against a foreign blob in the same key. */
 #define FLOW_CFG_MAGIC 0x46534331UL
 
-/* BUMP THIS whenever RuntimeConfig's layout changes. */
-#define FLOW_CFG_VERSION 1
+/* BUMP THIS whenever RuntimeConfig's layout changes.
+ *   1 = 0.1.0 (colours, timings, signs)
+ *   2 = 0.2.0 (proto 2): the whole layer TABLE moved in here, plus swap_keys /
+ *       nav_swap_xy / scroll_swap_xy. A v1 blob is rejected on the version
+ *       check and the device comes up on defaults - which is the intended
+ *       outcome, since a v1 blob has no keymap to carry forward. */
+#define FLOW_CFG_VERSION 2
 
 /* ================================================================== */
 /* The configuration itself                                            */
@@ -56,6 +61,14 @@
  * contain no pointers.
  */
 struct RuntimeConfig {
+  /* --- the layer table (0.2.0) --- */
+  /* Seeded from DEFAULT_LAYERS in layers.cpp and then edited live by
+   * `set_action` / `set_layer_meta`. This is what every reader goes through
+   * (layerAt()); the compile-time table is only the seed. Slots past
+   * layer_count are zeroed and never read. */
+  LayerRuntime layers[FLOW_MAX_LAYERS];
+  uint8_t      layer_count; /* 1..FLOW_MAX_LAYERS, fixed at seed time      */
+
   /* --- colours --- */
   uint8_t layer_rgb[FLOW_MAX_LAYERS][3]; /* per-layer colour              */
   uint8_t fn_rgb[FN_COUNT][3];           /* per-function colour           */
@@ -86,6 +99,16 @@ struct RuntimeConfig {
   int8_t scroll_x_sign;
   int8_t scroll_y_sign;
   int8_t mouse_y_sign; /* USER inversion, applied on top of MOUSE_Y_SIGN */
+
+  /* --- mounting orientation (0.2.0) --- */
+  /* Swaps X and Y on a stick BEFORE the sign multiply; with the two signs
+   * that covers all four 90-degree mountings. */
+  uint8_t nav_swap_xy;
+  uint8_t scroll_swap_xy;
+
+  /* Which physical DualKey button is "Key 1" (and which LED is under it).
+   * Replaces the compile-time KEYS_SWAPPED; applied live by keysApplySwap(). */
+  uint8_t swap_keys;
 };
 
 /* The one instance. Zero-initialised before settingsBegin() runs; nothing

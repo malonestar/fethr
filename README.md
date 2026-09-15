@@ -92,7 +92,8 @@ There's no iOS app, but a Shortcut gets you most of the way: record, send to the
 ## The hardware layer: the sidecar
 
 <p align="center">
-  <img src="docs/images/sidecar.png" width="720" alt="fethr Sidecar page showing the layer map and device illustration">
+  <img src="docs/images/sidecar.png" width="720" alt="fethr Sidecar page: the chain builder, with the modules laid out on a grid and joined by the bus connector">
+  <br><sub>The Layout tab. Captured with <code>assets/capture_builder.py</code>, which drives the app from a simulated chain — hence the port name.</sub>
 </p>
 
 The sidecar is a small desk device built from [M5Stack Chain](https://docs.m5stack.com/en/chain/Chain_DualKey) modules. The brain is a [Chain DualKey](https://shop.m5stack.com/products/chain-dual-key-with-esp32-s3) — an ESP32-S3 with two mechanical keys, RGB LEDs, a battery, and USB/BLE. The other modules daisy-chain off it over a UART bus:
@@ -111,6 +112,10 @@ To the PC it's just a USB keyboard and mouse, so it works without fethr running 
 
 The stock M5Stack firmware can't do this — it only offers a fixed list of paired shortcuts and has no notion of holding a key down — so the sidecar runs its own firmware. This first release ships one layer (dictation). The source has more layers (media keys, edit shortcuts, mouse mode) behind a build flag; they'll be turned on once the first layer has been through real use.
 
+**The chain builder.** The Sidecar page's **Layout** tab is a picture of your own sidecar. You drag the modules around a snap grid until the canvas matches what's on your desk, and rotate any of them in 90° steps to match how they're actually mounted. That second part isn't decoration: a joystick screwed on sideways still has to send "up" when you push it away from you, so a rotation is translated into the firmware's axis settings and pushed to the device there and then. Turning the DualKey upside down swaps Key 1 and Key 2 for the same reason.
+
+The order of the chain isn't editable, because it isn't yours to choose — it's whatever order the modules are physically plugged in, the device reports it, and the connector on the canvas is drawn from that report. Place a module the device hasn't reported and it's drawn dimmed, as a plan rather than a fact. Click any module and the panel on the right shows what its keys do on each layer; with firmware 0.2 or newer you can change them there — action type, key, modifiers, colour class — and the layer's name, colour and stick/knob mode with them. On older firmware the canvas still works and the editor says why it's off. Layouts are saved with your settings, so the picture survives a restart and a replug.
+
 **Companion display (optional).** The DualKey has two Chain ports and the bus only needs one, so the spare one can carry a second screen: an [AtomS3R](https://docs.m5stack.com/en/core/AtomS3R) on an [Atomic ToChain Base](https://docs.m5stack.com/en/accessory/Atomic_ToChain_Base), which shows the current layer and the dictation state in colour on a 128×128 LCD and cycles layers when you press it. It's a second controller on a plain UART rather than a Chain node, with its own firmware in `hardware/firmware/companion-atoms3r/`; the DualKey works out which port and which cable orientation on its own. [hardware/COMPANION.md](hardware/COMPANION.md) covers it. Untested on hardware so far.
 
 **Flashing.** You don't need a toolchain. Prebuilt images are in `hardware/bin/`, and [hardware/FLASH.md](hardware/FLASH.md) walks through it: put the DualKey in download mode (it has no reset button — switch to middle, hold Key 1, plug in), then flash with Espressif's browser flasher or `esptool`. Building from source is a PlatformIO project in `hardware/firmware/pio/`; notes on what's been verified against real hardware are in [hardware/README.md](hardware/README.md). The serial protocol between the device and the app is in [hardware/PROTOCOL.md](hardware/PROTOCOL.md).
@@ -121,9 +126,12 @@ Once it's flashed, turn on **Enable sidecar** in the app's Sidecar page. With it
 
 ```
 fethr/            the app (Python package)
-  core/           dictation engine, settings, sidecar serial bridge, audio
+  core/           dictation engine, settings, sidecar serial bridge, audio,
+                  chain-builder geometry (layout.py) and key vocabulary
   ui/             settings window (pywebview) + the HTML/CSS/JS it shows
+                  (web/img/ holds the module photos the builder draws)
   assets/         logo sources and generated icons (build_logo.py)
+assets/           source photographs + build_sprites.py, capture_builder.py
 scripts/          launcher, autostart installer, kill switch
 server/           whisper.cpp server build script + systemd unit
 hardware/         macro-pad firmware (PlatformIO), protocol, hardware notes

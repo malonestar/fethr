@@ -49,7 +49,7 @@ Issues = "https://github.com/malonestar/fethr/issues"
 include = ["fethr*"]
 
 [tool.setuptools.package-data]
-fethr = ["ui/web/*", "assets/*"]
+fethr = ["ui/web/*", "ui/web/img/*", "assets/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

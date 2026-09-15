@@ -41,8 +41,10 @@ from pathlib import Path
 from typing import Any
 
 from .. import __version__
+from ..core import actions as action_vocab
 from ..core import audio as audio_core
-from ..core.device import DEFAULT_CONFIG, SidecarError
+from ..core import layout as layout_core
+from ..core.device import DEFAULT_CONFIG, PROTO_ACTIONS, SidecarError
 from ..core.dictation import silent_wav
 from ..core.settings import settings_dir
 
@@ -213,6 +215,142 @@ class Api:
         ok = device.connect()
         return {"ok": ok, "error": "" if ok else device.last_error,
                 "status": device.snapshot()}
+
+    # -- chain builder ---------------------------------------------------
+
+    def builder_model(self) -> dict[str, Any]:
+        """Everything static the Layout tab needs, fetched once at boot.
+
+        Module footprints and allowed rotations (:mod:`fethr.core.layout`) plus
+        the key-mapping vocabulary (:mod:`fethr.core.actions`).  Keeping this on
+        the Python side means the page and the protocol validation cannot drift
+        apart.
+        """
+        return {
+            "grid_px": layout_core.GRID_PX,
+            "canvas_cells": list(layout_core.CANVAS_CELLS),
+            "layout_version": layout_core.LAYOUT_VERSION,
+            "proto_actions": PROTO_ACTIONS,
+            "modules": {name: spec.as_dict() for name, spec in layout_core.MODULES.items()},
+            # A joystick's slots depend on the job the device gave it, which is
+            # runtime information; the page picks the list by role.
+            "role_slots": {
+                role: list(layout_core.slots_for("joystick", role))
+                for role in ("nav", "scroll")
+            },
+            "vocabulary": action_vocab.vocabulary(),
+        }
+
+    def get_sidecar_layout(self) -> dict[str, Any]:
+        """The saved canvas, cleaned up (an empty one if there is none yet)."""
+        return layout_core.normalise_layout(self._app.settings.sidecar.layout)
+
+    def set_sidecar_layout(self, layout: dict[str, Any]) -> dict[str, Any]:
+        """Persist the canvas.
+
+        Written as a whole document rather than patched: the set of nodes is
+        whatever is plugged in, so there is no stable field list to merge.
+        """
+        try:
+            saved = self._app.set_sidecar_layout(layout)
+            return {"ok": True, "layout": saved}
+        except Exception as exc:
+            log.exception("set_sidecar_layout failed")
+            return {"ok": False, "error": str(exc)}
+
+    def layout_auto_arrange(
+        self, nodes: list[dict[str, Any]] | None = None, companion: bool = False
+    ) -> dict[str, Any]:
+        """Lay the device's reported chain out in reading order.
+
+        Returns the layout without saving it — the page persists whatever the
+        user keeps.
+        """
+        return layout_core.auto_arrange(nodes or [], companion=bool(companion))
+
+    def layout_orientation(
+        self, module: str, rotation: int, role: str | None = None
+    ) -> dict[str, Any]:
+        """Config a module mounted at ``rotation`` needs, ready to be sent.
+
+        ``settings`` is what this device will accept; ``dropped`` names the
+        paths a protocol 1 device cannot express, so the page can say why a
+        quarter turn only half worked instead of silently doing nothing.
+        """
+        try:
+            wanted = layout_core.orientation_settings(module, int(rotation), role)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc), "settings": {}, "dropped": []}
+        proto = self._app.device.proto or PROTO_ACTIONS
+        allowed = layout_core.filter_for_proto(wanted, proto)
+        return {
+            "ok": True,
+            "settings": allowed,
+            "dropped": layout_core.losses_for_proto(wanted, proto),
+        }
+
+    def device_apply_orientation(
+        self, module: str, rotation: int, role: str | None = None
+    ) -> dict[str, Any]:
+        """Compute a module's orientation settings and push them to the device.
+
+        One ``set`` per path, because that is the protocol's granularity.  The
+        first refusal stops the run and is reported — a half-applied orientation
+        is worth knowing about.
+        """
+        plan = self.layout_orientation(module, rotation, role)
+        if not plan["ok"]:
+            return plan
+        device = self._app.device
+        applied: dict[str, Any] = {}
+        for path, value in plan["settings"].items():
+            try:
+                device.set_config(path, value)
+            except SidecarError as exc:
+                return {"ok": False, "error": str(exc), "applied": applied,
+                        "dropped": plan["dropped"]}
+            applied[path] = value
+        return {"ok": True, "applied": applied, "dropped": plan["dropped"]}
+
+    def device_get_layers(self) -> dict[str, Any]:
+        """Layer metadata and bound actions, or a reason the editor is off.
+
+        A device on protocol 1 is never asked: ``get_layers`` does not exist
+        there, and an ``err`` reply would look like a fault rather than the
+        expected answer for older firmware.
+        """
+        device = self._app.device
+        proto = device.proto
+        base = {"proto": proto, "connected": device.connected,
+                "layers": [], "editable": False}
+        if not device.connected:
+            return {**base, "ok": True, "hint": "No sidecar connected."}
+        if proto < PROTO_ACTIONS:
+            return {**base, "ok": True,
+                    "hint": "Editing what the keys do needs firmware 0.2."}
+        try:
+            return {**base, "ok": True, "editable": True, "layers": device.get_layers()}
+        except SidecarError as exc:
+            return {**base, "ok": False, "error": str(exc)}
+
+    def device_set_action(
+        self, layer: int, slot: str, action: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Bind one slot on one layer (``set_action``)."""
+        try:
+            request = action_vocab.action_request(layer, slot, action)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        result = self._device_call(
+            lambda d: d.set_action(request["layer"], request["slot"], request["action"])
+        )
+        if result.get("ok"):
+            result["action"] = request["action"]
+        return result
+
+    def device_set_layer_meta(self, layer: int, fields: dict[str, Any]) -> dict[str, Any]:
+        """Rename/recolour a layer or change its control modes."""
+        return self._device_call(lambda d: d.set_layer_meta(int(layer), **(fields or {})))
 
     def _device_call(self, action: Any) -> dict[str, Any]:
         try:
@@ -412,13 +550,43 @@ class WindowManager:
             log.debug("window icon not applied", exc_info=True)
 
 
+#: The ``--smoke`` screenshot walk: ``(file name, JavaScript that shows it)``.
+#: The sidecar's two tabs are separate entries because they are separate
+#: screens — the Layout tab is where the chain builder lives, and it is only
+#: reachable once the sidecar page itself is up.
+_SMOKE_PAGES: tuple[tuple[str, str], ...] = (
+    ("dictation", "document.querySelector('.nav-item[data-page=\"dictation\"]').click()"),
+    ("sidecar", "document.querySelector('.nav-item[data-page=\"sidecar\"]').click()"),
+    ("sidecar-layout",
+     "document.querySelector('.nav-item[data-page=\"sidecar\"]').click();"
+     "document.querySelector('.tab[data-tab=\"layout\"]').click()"),
+    # The inspector is only on screen once a module is selected, so the walk
+    # selects one. It picks the Chain Key because that module has the most to
+    # show: a tap and a double-tap, both editable.
+    ("sidecar-inspector",
+     "document.querySelector('.nav-item[data-page=\"sidecar\"]').click();"
+     "document.querySelector('.tab[data-tab=\"layout\"]').click();"
+     "var n = document.querySelector('.bnode[data-module=\"key\"]');"
+     "if (n) selectNode(n.dataset.key)"),
+    ("sidecar-settings",
+     "document.querySelector('.nav-item[data-page=\"sidecar\"]').click();"
+     "document.querySelector('.tab[data-tab=\"settings\"]').click()"),
+    ("audio", "document.querySelector('.nav-item[data-page=\"audio\"]').click()"),
+    ("about", "document.querySelector('.nav-item[data-page=\"about\"]').click()"),
+)
+
+
 def _smoke_screenshots(app: Any) -> None:
     """Optional visual capture during ``--smoke``.
 
-    When ``FETHR_SMOKE_SHOTS`` names a directory, walk every sidebar page and
+    When ``FETHR_SMOKE_SHOTS`` names a directory, walk :data:`_SMOKE_PAGES` and
     save a PNG of the window for each (used for UI review on machines without
     a person in front of them). Silently skipped when unset or when
     ``PIL.ImageGrab`` is unavailable.
+
+    The Sidecar pages only have anything on them with the sidecar switched on,
+    so a useful capture run points ``--settings`` at a file that has it
+    enabled.
     """
     import os
 
@@ -431,23 +599,112 @@ def _smoke_screenshots(app: Any) -> None:
         return
     os.makedirs(out_dir, exist_ok=True)
     win = app.window._window  # pywebview Window
-    for page in ("dictation", "sidecar", "audio", "about"):
-        win.evaluate_js(
-            "document.querySelector('.nav-item[data-page=\"%s\"]').click()" % page
-        )
-        time.sleep(1.2)
-        # pywebview reports logical pixels; ImageGrab works in physical ones.
-        scale = 1.0
-        try:
-            import ctypes
+    _pin_window(win, True)
+    try:
+        for name, script in _SMOKE_PAGES:
+            try:
+                win.evaluate_js(script)
+            except Exception:
+                log.debug("smoke page %s not reachable", name, exc_info=True)
+                continue
+            time.sleep(1.2)
+            if not _window_is_on_top(win):
+                log.warning(
+                    "skipped the %s capture: something else is in front of the "
+                    "window, and a screen grab would record that instead", name)
+                continue
+            # pywebview reports logical pixels; ImageGrab works in physical ones.
+            scale = _window_scale(win)
+            bbox = tuple(int(round(v * scale)) for v in
+                         (win.x, win.y, win.x + win.width, win.y + win.height))
+            try:
+                ImageGrab.grab(bbox=bbox).save(os.path.join(out_dir, f"{name}.png"))
+            except OSError as exc:
+                # A locked session or a sleeping display has no screen to grab.
+                # Missing captures must not fail the smoke run they ride along
+                # with — that run is checking the app starts, not the desktop.
+                log.warning("could not capture %s: %s", name, exc)
+    finally:
+        _pin_window(win, False)
 
-            hwnd = int(win.native.Handle.ToInt64())
-            scale = ctypes.windll.user32.GetDpiForWindow(hwnd) / 96.0
-        except Exception:
-            pass
-        bbox = tuple(int(round(v * scale)) for v in
-                     (win.x, win.y, win.x + win.width, win.y + win.height))
-        ImageGrab.grab(bbox=bbox).save(os.path.join(out_dir, f"{page}.png"))
+
+def _window_scale(win: Any) -> float:
+    """Physical pixels per logical pixel for this window (1.0 off Windows)."""
+    try:
+        import ctypes
+
+        hwnd = int(win.native.Handle.ToInt64())
+        return ctypes.windll.user32.GetDpiForWindow(hwnd) / 96.0
+    except Exception:
+        return 1.0
+
+
+def _window_is_on_top(win: Any) -> bool:
+    """Is our window really the thing at its own coordinates?
+
+    ``ImageGrab`` photographs a *screen region*, not a window, so anything
+    covering the app lands in the PNG instead — including whatever the person
+    at the keyboard is doing.  :func:`_pin_window` asks for topmost, but another
+    topmost window can still win, so this checks the result rather than trusting
+    it: hit-test three points inside the window and see whose window comes back.
+
+    Returns True when the check cannot run at all (non-Windows, or ctypes
+    unavailable); there the smoke capture is a developer running it deliberately
+    and there is nothing better to do.
+    """
+    if sys.platform != "win32":
+        return True
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        # HWNDs are pointer-sized; the default int restype truncates them on x64.
+        user32.WindowFromPoint.argtypes = [wintypes.POINT]
+        user32.WindowFromPoint.restype = wintypes.HWND
+        user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+        user32.GetAncestor.restype = wintypes.HWND
+
+        hwnd = int(win.native.Handle.ToInt64())
+        scale = _window_scale(win)
+        GA_ROOT = 2
+        for fx, fy in ((0.5, 0.15), (0.5, 0.5), (0.5, 0.85)):
+            point = wintypes.POINT(
+                int(round((win.x + win.width * fx) * scale)),
+                int(round((win.y + win.height * fy) * scale)),
+            )
+            found = user32.WindowFromPoint(point)
+            if not found or int(user32.GetAncestor(found, GA_ROOT) or 0) != hwnd:
+                return False
+        return True
+    except Exception:
+        log.debug("could not verify the window is on top", exc_info=True)
+        return False
+
+
+def _pin_window(win: Any, pinned: bool) -> None:
+    """Raise the window above everything else, without taking focus.
+
+    ``ImageGrab`` photographs a *screen region*, so whatever is in front of the
+    window is what lands in the PNG.  Pinning it topmost for the duration makes
+    the capture deterministic — and, more to the point, stops it recording
+    whatever the person at the keyboard happens to be doing.  ``SWP_NOACTIVATE``
+    means their typing goes on going where they sent it.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        hwnd = int(win.native.Handle.ToInt64())
+        HWND_TOPMOST, HWND_NOTOPMOST = -1, -2
+        SWP_NOMOVE, SWP_NOSIZE, SWP_NOACTIVATE = 0x0002, 0x0001, 0x0010
+        ctypes.windll.user32.SetWindowPos(
+            hwnd, HWND_TOPMOST if pinned else HWND_NOTOPMOST, 0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        )
+    except Exception:
+        log.debug("could not pin the window for capture", exc_info=True)
 
 
 def run_smoke(app: Any, seconds: float = 5.0) -> None:

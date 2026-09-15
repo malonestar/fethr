@@ -23,17 +23,27 @@
 
 #include <Arduino.h>
 
-#define FLOW_SIDECAR_VERSION "0.1.0"
+#define FLOW_SIDECAR_VERSION "0.2.0"
 
 /* Host settings protocol revision (PROTOCOL.md). Bump only on a breaking
- * change to the wire format; the host checks it in the `hello` reply. */
-#define FLOW_SIDECAR_PROTO 1
+ * change to the wire format; the host checks it in the `hello` reply.
+ * 2 = the runtime layout: get_layers / set_action / set_layer_meta, plus the
+ * swap_keys / nav_swap_xy / scroll_swap_xy settings. */
+#define FLOW_SIDECAR_PROTO 2
 
-/* 0 = build the FLOW (dictation) layer only, which is what 0.1.0 ships;
- * the other layers are complete but unproven on hardware; set to 1 to build
- * them. With one layer the Chain Key's long hold has nothing to cycle to and
- * is inert - its tap and double-tap still work. */
-#define FLOW_EXTRA_LAYERS 1
+/*
+ * HOW MANY DEFAULT LAYERS TO SEED - not a boolean any more (0.2.0).
+ *
+ * Up to 0.1.0 this was a flag: 0 = FLOW only, 1 = build all four. The layer
+ * table is now RUNTIME data (g_cfg.layers, seeded from DEFAULT_LAYERS and
+ * editable over the host protocol), so all four defaults are always compiled
+ * and this number only says how many of them a factory-default device comes up
+ * with. Legal values are 1 (FLOW alone, the original 0.1.0 image) and 4 (every
+ * layer, which is what is shipped and what the README describes); layers.cpp
+ * static_asserts the range so the old `0` fails the build instead of silently
+ * producing an empty table.
+ */
+#define FLOW_EXTRA_LAYERS 4
 
 /* ================================================================== */
 /* Debug / serial console                                              */
@@ -61,8 +71,12 @@
 
 /* Outbound scratch buffer. Bigger than FLOW_PROTO_MAX_LINE on purpose: the
  * `get_config` reply serialises the whole config object and lands around
- * 700 bytes. Static, so no reply or event ever touches the heap. */
-#define FLOW_PROTO_OUT_BYTES 1024
+ * 700 bytes, and 0.2.0's `get_layers` serialises the whole keymap - four
+ * layers times six actions, ~2.2 KB worst case with every action carrying a
+ * key name, a mods array and an fn class. Static, so no reply or event ever
+ * touches the heap; an over-long reply is replaced by a fixed `err` line
+ * rather than emitted malformed. */
+#define FLOW_PROTO_OUT_BYTES 3072
 
 /* Longest text the `mono` command may scroll (PROTOCOL.md says <= 32). */
 #define FLOW_PROTO_MONO_TEXT 32
@@ -108,19 +122,13 @@
 /* Chain DualKey (ESP32-S3FN8) board pins                              */
 /* ================================================================== */
 
-/* KEYS_SWAPPED: 0 = "Key 1" is the button farther from the lanyard hole (M5's
- * naming); 1 = the other way round. Use it when the DualKey is mounted USB-up
- * and you want raw dictation on the LEFT key. It swaps the GPIOs AND the LED
- * indices together, so colours stay under the right caps. */
-#define KEYS_SWAPPED 0
-
-#if KEYS_SWAPPED
-#define PIN_KEY1      17
-#define PIN_KEY2      0
-#else
+/* The two on-board buttons, in M5's naming: Key1 is the one farther from the
+ * lanyard hole. Which of them the firmware treats as "Key 1" is the RUNTIME
+ * setting g_cfg.swap_keys (0.2.0, PROTOCOL.md) - the compile-time KEYS_SWAPPED
+ * flag is gone. main.cpp::keysApplySwap() assigns these two GPIOs to
+ * g_key[0]/g_key[1] and leds.cpp flips the LED index to match, both live. */
 #define PIN_KEY1      0  /* Key1 - the button farther from the lanyard hole */
 #define PIN_KEY2      17 /* Key2                                            */
-#endif
 #define PIN_LED_DATA  21 /* WS2812 data for the two on-board key LEDs       */
 #define PIN_LED_POWER 40 /* WS2812 power enable - MUST be driven HIGH       */
 #define NUM_LEDS      2
@@ -129,14 +137,14 @@
 
 /* Which NeoPixel index sits under which key (default for g_cfg.led_index_key1;
  * key2 is always the other one). Verified on hardware 2026-09-14: NeoPixel 0
- * sits under the GPIO-17 key, NeoPixel 1 under the GPIO-0 key. */
-#if KEYS_SWAPPED
-#define LED_INDEX_KEY1 0
-#define LED_INDEX_KEY2 1
-#else
+ * sits under the GPIO-17 key, NeoPixel 1 under the GPIO-0 key.
+ *
+ * This describes the UNSWAPPED board: it is the pixel under PIN_KEY1. When
+ * g_cfg.swap_keys is set, ledForKey() uses the other one for Key 1, because
+ * swapping which physical button is Key 1 has to move its colour with it -
+ * exactly what the old KEYS_SWAPPED #if did at compile time. */
 #define LED_INDEX_KEY1 1
 #define LED_INDEX_KEY2 0
-#endif
 
 /* G7 (SWITCH_1) and G8 (SWITCH_2) are the 3-position side-switch sense lines.
  * They are deliberately NOT touched anywhere in this firmware: driving them as
@@ -241,7 +249,8 @@
 /* ---- the key legend pushed to the companion (0.3.0) ---- */
 
 /* The companion's idle screen is a legend for the CURRENT layer, and the
- * DualKey is its only source: the strings are built from LAYERS[] and shipped
+ * DualKey is its only source: the strings are built from the runtime layer
+ * table (layerAt(), fed by set_action/set_layer_meta) and shipped
  * with every `hello` and `layer` event, so the screen cannot drift from the
  * table the keys actually fire from.
  *
@@ -512,10 +521,15 @@
 /* Layer table shape                                                   */
 /* ================================================================== */
 
-/* Upper bound on LAYER_COUNT. Fixes the size of RuntimeConfig::layer_rgb, so
- * it is part of the NVS blob layout - bumping it must bump FLOW_CFG_VERSION.
- * layers.cpp static_asserts that the real table fits. */
+/* Upper bound on the number of layers. Fixes the size of
+ * RuntimeConfig::layer_rgb AND RuntimeConfig::layers, so it is part of the NVS
+ * blob layout - bumping it must bump FLOW_CFG_VERSION. layers.cpp
+ * static_asserts that the default table fits. */
 #define FLOW_MAX_LAYERS 4
+
+/* Longest layer name, excluding the NUL (PROTOCOL.md: "Names are <= 8 chars").
+ * The runtime name is a fixed array inside the NVS blob, so this is layout. */
+#define FLOW_LAYER_NAME_MAX 8
 
 /* What the nav stick does on a layer. */
 enum NavMode : uint8_t {
@@ -538,6 +552,11 @@ enum AngleMode : uint8_t {
   ANGLE_WHEEL   /* mouse wheel ticks per detent       */
 };
 
+/*
+ * The COMPILE-TIME default table (layers.cpp). Since 0.2.0 this is no longer
+ * what the firmware reads: it is the seed for the runtime copy below. It keeps
+ * a `const char *` name because it lives in flash and never moves.
+ */
 struct LayerConfig {
   const char *name;
   uint8_t     r, g, b;   /* layer colour                            */
@@ -553,8 +572,50 @@ struct LayerConfig {
   uint8_t     angle_mode;   /* AngleMode                            */
 };
 
-extern const LayerConfig LAYERS[];
-extern const uint8_t     LAYER_COUNT;
+extern const LayerConfig DEFAULT_LAYERS[];
+extern const uint8_t     DEFAULT_LAYER_COUNT;
+
+/*
+ * The RUNTIME layer (0.2.0). One of these per layer lives inside
+ * RuntimeConfig, so it must be trivially copyable and contain NO POINTERS -
+ * hence the inline name array where LayerConfig has a `const char *`.
+ *
+ * The colour is deliberately NOT duplicated here: it stays in
+ * RuntimeConfig::layer_rgb, which `set layer_rgb.N` already edits and
+ * layerRgb() already reads. `set_layer_meta`'s `rgb` writes the same place.
+ * The glyph is not host-settable either - there is no letter-glyph generator,
+ * so a renamed layer keeps the bitmap it was seeded with.
+ */
+struct LayerRuntime {
+  char    name[FLOW_LAYER_NAME_MAX + 1];
+  uint8_t glyph;        /* GlyphId shown on layer change           */
+  Action  key1;         /* DualKey Key1                            */
+  Action  key2;         /* DualKey Key2                            */
+  Action  chain_key;    /* Chain Key single tap                    */
+  Action  chain_key_double; /* Chain Key double tap                */
+  Action  nav_click;    /* nav stick click                         */
+  Action  scroll_click; /* scroll stick click                      */
+  uint8_t nav_mode;     /* NavMode                                 */
+  uint8_t scroll_mode;  /* ScrollMode                              */
+  uint8_t angle_mode;   /* AngleMode                               */
+};
+
+/* THE table every reader goes through (layers.cpp). An out-of-range index
+ * yields layer 0 rather than reading past the array, which is what makes the
+ * callers' `g_layer` uses safe without a bounds check each time. */
+const LayerRuntime &layerAt(uint8_t index);
+
+/* How many layers exist right now - g_cfg.layer_count, seeded from
+ * FLOW_EXTRA_LAYERS. A run-time value since 0.2.0, not a link-time constant. */
+uint8_t layerCount(void);
+
+/* Copy compile-time default `index` into a runtime layer (settings.cpp).
+ * Out of range clears `out` to an unnamed, unbound layer. */
+void layerDefaultInto(uint8_t index, LayerRuntime &out);
+
+/* The compile-time default colour of layer `index`; black when out of range.
+ * settings.cpp seeds g_cfg.layer_rgb from this. */
+void layerDefaultRgb(uint8_t index, uint8_t out_rgb[3]);
 
 /* Layer colour lookup (layers.cpp). Reads g_cfg.layer_rgb; an out-of-range
  * layer yields layer 0 rather than reading past the table. */
@@ -574,6 +635,20 @@ const char *fnName(uint8_t fn);
 /* Reverse lookup for `set fn_rgb.<NAME>`. Returns FN_NONE when unknown. */
 uint8_t fnByName(const char *name);
 
+/* ---- the proto-2 `fn` CLASS vocabulary (PROTOCOL.md v2) ---- */
+
+/* The lower-case class names `get_layers` emits and `set_action` accepts
+ * ("dict_raw", "media", "custom", ...). These are a SECOND spelling of the
+ * same FnId: `fn_rgb`'s keys and the `hold` event's `fn` keep the upper-case
+ * v1 names (fnName()), which are wire format a host already depends on.
+ * FN_NONE's class is "custom" - a neutral colour, i.e. the layer colour.
+ * Never NULL for an in-range id. */
+const char *fnClassName(uint8_t fn);
+
+/* Reverse lookup. Case-insensitive, so a host that sends "DICT_RAW" here is
+ * understood too. Returns false when the name is not a class at all. */
+bool fnClassByName(const char *name, uint8_t *out);
+
 /* ---- human labels, for the companion display (0.3.0) ---- */
 
 /* A short lower-case description of what an action DOES ("play/pause",
@@ -587,5 +662,18 @@ const char *actionLabel(const Action &a);
  * `layer` into `out`, always NUL-terminated. Truncates rather than overflows.
  * This is the single source of the companion's idle screen. */
 void layerLegend(uint8_t layer, uint8_t slot, char *out, size_t out_len);
+
+/* ---- per-layer MODE names, wire format for get_layers/set_layer_meta ---- */
+
+/* "arrows" | "mouse" | "off", "wheel_pan" | "wheel_arrows" | "off",
+ * "volume" | "wheel" | "off". Never NULL: an unknown value reads as "off". */
+const char *navModeName(uint8_t mode);
+const char *scrollModeName(uint8_t mode);
+const char *angleModeName(uint8_t mode);
+
+/* Reverse lookups; false when the string is not one of the above. */
+bool navModeByName(const char *name, uint8_t *out);
+bool scrollModeByName(const char *name, uint8_t *out);
+bool angleModeByName(const char *name, uint8_t *out);
 
 #endif /* FLOW_CONFIG_H */

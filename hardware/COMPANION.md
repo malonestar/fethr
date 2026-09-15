@@ -57,7 +57,7 @@ The resting screen is a **key legend for the layer you are on**:
 
 ```
   ┌────────────────────┐
-  │ 5n      FLOW  4.01V│   layer name in the layer's colour;
+  │ 5n      FETHR  4.01V│   layer name in the layer's colour;
   ├────────────────────┤   nodes and battery in the corners
   │ K1 hold: dictate   │
   │ K2 hold: clean     │   one row per key
@@ -121,7 +121,7 @@ app, so every screen and the app all learn about it together.
 
 **If the sidecar builds only one layer** there is nothing to cycle to and a click does
 nothing; hold still identifies. The image in `bin/fethr-sidecar-0.1.0/` builds all four
-(`FLOW_EXTRA_LAYERS 1`), so on that build a click walks FLOW → MEDIA → EDIT → MOUSE.
+(`FLOW_EXTRA_LAYERS 1`), so on that build a click walks FETHR → MEDIA → EDIT → MOUSE.
 
 ## Flashing the Atom
 
@@ -166,7 +166,7 @@ board   : AtomS3R
 link    : linked on rx=G5 tx=G6
 last rx : 812ms ago
 sidecar : fw 0.1.0
-layer   : 0/4 FLOW  rgb=0,90,255
+layer   : 0/4 FETHR  rgb=0,90,255
 legend 0: K1 hold: dictate
 legend 1: K2 hold: clean
 legend 2: K3: repaste

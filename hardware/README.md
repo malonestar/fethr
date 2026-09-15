@@ -6,7 +6,7 @@ from [M5Stack Chain](https://docs.m5stack.com/en/chain/Chain_DualKey) modules an
 runs fethr's own firmware. To the PC it is an ordinary USB keyboard and mouse — no
 driver, and no app needed for the keys themselves to work.
 
-**0.1.0 ships one layer: FLOW, the dictation layer.** The firmware also contains
+**0.2.0 ships four layers: FETHR (dictation), MEDIA, EDIT, MOUSE.** The firmware also contains
 MEDIA, EDIT and MOUSE layers; they are written and they compile, but they have not
 been exercised on hardware, so they sit behind a build flag
 (`FLOW_EXTRA_LAYERS` in `firmware/pio/include/config.h`). With a single layer the
@@ -58,7 +58,7 @@ whichever pair the Chain bus did not claim. Driving G7/G8 — the side-switch se
 lines — breaks the board's ability to power off cleanly, so the firmware never
 touches them.
 
-## What the FLOW layer does
+## What the FETHR layer does
 
 | Input | Action | What the app does |
 |---|---|---|
@@ -173,7 +173,7 @@ FIRMWARE_NOTES.md §6 has the full list with what the firmware does about each.
 
 * BLE mode — the DualKey supports it (battery powered, pairs to a phone as a
   keyboard); the firmware is USB-only.
-* The other three layers, once FLOW has been through real use.
+* Chain order editing in the builder (order is physical; not planned).
 * Remapping keys from the app. Today the protocol edits appearance and feel;
   which key fires what is compile-time data.
 * The second Chain port as a second *bus*, for more nodes. It currently carries the
