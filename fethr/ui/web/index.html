@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fethr</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<!-- Icon sprite: every glyph in the UI is an inline SVG symbol, so the app
+     ships with no icon font, no CDN and no network access at runtime. -->
+<svg class="sprite" aria-hidden="true">
+  <symbol id="i-mic" viewBox="0 0 24 24">
+    <rect x="9" y="2.5" width="6" height="11" rx="3"/>
+    <path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7"/>
+  </symbol>
+  <symbol id="i-pad" viewBox="0 0 24 24">
+    <rect x="2.5" y="5.5" width="19" height="13" rx="2.5"/>
+    <path d="M7 10h2M11 10h2M15 10h2M7 14h10"/>
+  </symbol>
+  <symbol id="i-audio" viewBox="0 0 24 24">
+    <path d="M4 9.5h3.5L12 5.5v13L7.5 14.5H4z"/>
+    <path d="M16 9a4.2 4.2 0 0 1 0 6M18.8 6.4a8 8 0 0 1 0 11.2"/>
+  </symbol>
+  <symbol id="i-info" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.6v.8"/>
+  </symbol>
+  <symbol id="i-feather" viewBox="0 0 24 24">
+    <path d="M20.2 3.8c-3-.9-7.6.4-10.4 3.2-2.6 2.6-3 5.9-2.5 8.4L4 18.7M9 14.5h5.4M11.6 9.9h4.6"/>
+    <path d="M6.9 15.4C4.4 14.9 3.1 10.6 5.7 8"/>
+  </symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24">
+    <path d="M20 12a8 8 0 1 1-2.6-5.9M20 4v4.5h-4.5"/>
+  </symbol>
+  <symbol id="i-link" viewBox="0 0 24 24">
+    <path d="M10.5 13.5a4 4 0 0 0 5.7 0l2.3-2.3a4 4 0 0 0-5.7-5.7L11.5 6.8"/>
+    <path d="M13.5 10.5a4 4 0 0 0-5.7 0l-2.3 2.3a4 4 0 0 0 5.7 5.7l1.3-1.3"/>
+  </symbol>
+</svg>
+
+<div class="app">
+
+  <aside class="sidebar">
+    <div class="brand">
+      <img class="brand-mark" src="mark.svg" alt="" aria-hidden="true">
+      <div class="brand-text">
+        <strong>fethr</strong>
+        <span id="brand-version">v0.1.0</span>
+      </div>
+    </div>
+
+    <nav class="nav" id="nav">
+      <button class="nav-item is-active" data-page="dictation">
+        <svg class="ico"><use href="#i-mic"/></svg><span>Dictation</span>
+      </button>
+      <button class="nav-item" data-page="sidecar">
+        <svg class="ico"><use href="#i-pad"/></svg><span>Sidecar</span>
+      </button>
+      <button class="nav-item" data-page="audio">
+        <svg class="ico"><use href="#i-audio"/></svg><span>Audio</span>
+      </button>
+      <button class="nav-item" data-page="about">
+        <svg class="ico"><use href="#i-info"/></svg><span>About</span>
+      </button>
+    </nav>
+
+    <div class="sidebar-foot">
+      <button class="theme-toggle" id="theme-toggle" title="Switch theme">
+        <span class="theme-dot"></span><span id="theme-label">Dark</span>
+      </button>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div class="status-group">
+        <span class="status" id="st-asr" title="Speech-to-text server">
+          <i class="dot"></i><b>ASR</b><em>—</em>
+        </span>
+        <span class="status" id="st-cleanup" title="Cleanup LLM server">
+          <i class="dot"></i><b>Cleanup</b><em>—</em>
+        </span>
+        <span class="status" id="st-sidecar" title="USB macro-pad">
+          <i class="dot"></i><b>Sidecar</b><em>—</em>
+        </span>
+      </div>
+      <div class="topbar-right">
+        <span class="pill" id="state-pill"><i></i><span>Idle</span></span>
+        <button class="icon-btn" id="btn-probe" title="Re-check servers">
+          <svg class="ico"><use href="#i-refresh"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <div class="scroll">
+
+      <!-- ============================== DICTATION ============================== -->
+      <section class="page is-active" id="page-dictation">
+        <div class="banner hidden" id="first-run">
+          <div>
+            <strong>Welcome to fethr.</strong>
+            Point it at your whisper.cpp server below, then hold
+            <span class="kbd" data-slot="raw">F8</span> anywhere and speak.
+            Everything stays on your machine.
+          </div>
+          <button class="btn btn-ghost" id="btn-dismiss-first">Got it</button>
+        </div>
+
+        <div class="grid">
+          <section class="card span-2">
+            <header><h2>Hotkeys</h2><p>Hold to dictate, tap to re-paste. Click a field, then press the key you want.</p></header>
+            <div class="row-3">
+              <label class="field">
+                <span>Raw dictation (hold)</span>
+                <input class="hotkey" id="hk-raw" data-path="dictation.hotkey_raw" readonly value="f8">
+              </label>
+              <label class="field">
+                <span>Cleaned dictation (hold)</span>
+                <input class="hotkey" id="hk-clean" data-path="dictation.hotkey_clean" readonly value="f9">
+              </label>
+              <label class="field">
+                <span>Re-paste last (tap)</span>
+                <input class="hotkey" id="hk-repaste" data-path="dictation.hotkey_repaste" readonly value="f7">
+              </label>
+            </div>
+          </section>
+
+          <section class="card">
+            <header><h2>Speech-to-text</h2><p>Any whisper.cpp <code>server</code> build with <code>/inference</code>.</p></header>
+            <label class="field">
+              <span>Server URL</span>
+              <input type="text" data-path="dictation.asr_url" placeholder="http://127.0.0.1:8890">
+            </label>
+            <div class="row-3">
+              <label class="field"><span>Language</span>
+                <input type="text" data-path="dictation.language" size="4"></label>
+              <label class="field"><span>Min seconds</span>
+                <input type="number" step="0.1" min="0" data-path="dictation.min_seconds"></label>
+              <label class="field"><span>Timeout (s)</span>
+                <input type="number" min="1" data-path="dictation.asr_timeout"></label>
+            </div>
+          </section>
+
+          <section class="card">
+            <header>
+              <h2>Cleanup pass</h2>
+              <p>Optional LLM polish on the <span class="kbd" data-slot="clean">F9</span> path.</p>
+            </header>
+            <label class="switch">
+              <input type="checkbox" data-path="dictation.cleanup_enabled">
+              <i></i><span>Enable cleanup</span>
+            </label>
+            <label class="field">
+              <span>Ollama URL</span>
+              <input type="text" data-path="dictation.cleanup_url" placeholder="http://127.0.0.1:11434">
+            </label>
+            <div class="row-2">
+              <label class="field"><span>Model</span>
+                <input type="text" data-path="dictation.cleanup_model"></label>
+              <label class="field"><span>Timeout (s)</span>
+                <input type="number" min="1" data-path="dictation.cleanup_timeout"></label>
+            </div>
+          </section>
+
+          <section class="card">
+            <header><h2>Feedback &amp; clipboard</h2><p>How fethr behaves around the paste.</p></header>
+            <label class="switch">
+              <input type="checkbox" data-path="dictation.beeps"><i></i><span>Beeps</span>
+            </label>
+            <label class="switch">
+              <input type="checkbox" data-path="dictation.restore_clipboard">
+              <i></i><span>Restore previous clipboard</span>
+            </label>
+            <label class="field">
+              <span>Restore delay (s)</span>
+              <input type="number" step="0.1" min="0" data-path="dictation.clipboard_restore_delay">
+            </label>
+            <div class="actions"><button class="btn btn-ghost" id="btn-beep">Test beep</button></div>
+          </section>
+
+          <section class="card">
+            <header><h2>Self-test</h2><p>Sends a sample clip through the full ASR round trip.</p></header>
+            <div class="actions">
+              <button class="btn btn-primary" id="btn-test">Test transcription</button>
+            </div>
+            <pre class="result" id="test-result">Not run yet.</pre>
+          </section>
+
+          <section class="card span-2">
+            <header><h2>Last transcript</h2><p>What fethr pasted most recently.</p></header>
+            <textarea class="transcript" id="last-transcript" readonly
+                      placeholder="Nothing dictated yet."></textarea>
+            <div class="actions">
+              <span class="muted" id="last-meta"></span>
+              <button class="btn btn-ghost" id="btn-repaste">Re-paste</button>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <!-- =============================== SIDECAR =============================== -->
+      <section class="page" id="page-sidecar">
+        <div class="banner hidden" id="sidecar-off">
+          <div><strong>Have a fethr sidecar?</strong>
+            Turn it on to configure it.</div>
+          <label class="switch">
+            <input type="checkbox" id="sidecar-toggle">
+            <i></i><span>Enable sidecar</span>
+          </label>
+        </div>
+
+        <div id="sidecar-controls">
+        <div class="banner warn hidden" id="no-device">
+          <div><strong>No sidecar detected.</strong>
+            Plug the macro-pad in over USB — fethr looks for an Espressif device
+            whose product string contains <code>fethr</code> and reconnects
+            automatically. Controls below show the firmware defaults.</div>
+        </div>
+
+        <div class="grid">
+          <section class="card span-2">
+            <header>
+              <h2>Connection</h2>
+              <p>Live values from the device.</p>
+            </header>
+            <div class="stats" id="dev-stats">
+              <div class="stat"><span>Port</span><b data-k="port">—</b></div>
+              <div class="stat"><span>Firmware</span><b data-k="fw">—</b></div>
+              <div class="stat"><span>Protocol</span><b data-k="proto">—</b></div>
+              <div class="stat"><span>Uptime</span><b data-k="uptime">—</b></div>
+              <div class="stat"><span>Battery</span><b data-k="vbat">—</b></div>
+              <div class="stat"><span>USB</span><b data-k="usb">—</b></div>
+            </div>
+            <div class="actions">
+              <button class="btn btn-ghost dev-only" id="btn-identify">Identify</button>
+              <button class="btn btn-ghost" id="btn-reconnect">Reconnect</button>
+              <span class="spacer"></span>
+              <span class="unsaved hidden" id="unsaved">Unsaved changes on device</span>
+              <button class="btn btn-ghost dev-only" id="btn-dev-reset">Reset defaults</button>
+              <button class="btn btn-primary dev-only" id="btn-dev-save">Save to device</button>
+            </div>
+          </section>
+
+          <section class="card span-2">
+            <header>
+              <h2>Device</h2>
+              <p>Chain order: DualKey → Key → Joystick → Joystick → Angle → Mono.</p>
+            </header>
+            <div class="device-strip" id="device-strip"></div>
+          </section>
+
+          <section class="card span-2">
+            <header>
+              <h2>Layers</h2>
+              <p id="layers-hint">What each control does.</p>
+            </header>
+            <div class="layer-switch" id="layer-switch"></div>
+            <div class="layer-grid" id="layer-grid"></div>
+          </section>
+
+          <section class="card">
+            <header><h2>Layer colours</h2><p>One accent per layer.</p></header>
+            <div class="swatches" id="layer-colours"></div>
+          </section>
+
+          <section class="card">
+            <header><h2>Function colours</h2><p>Each key's idle colour comes from its function.</p></header>
+            <div class="swatches" id="fn-colours"></div>
+          </section>
+
+          <section class="card">
+            <header><h2>LEDs</h2><p>Brightness and flash behaviour.</p></header>
+            <div class="swatches"><div class="swatch" data-cfg="hold_rgb">
+              <input type="color" data-dev="hold_rgb"><span>Hold (breathe)</span></div></div>
+            <label class="field"><span>Idle brightness (%)</span>
+              <input type="range" min="0" max="100" data-dev="led_idle_pct" data-out="out-idle">
+              <output id="out-idle"></output></label>
+            <label class="field"><span>Tap flash (ms)</span>
+              <input type="number" min="0" max="1000" data-dev="led_flash_ms"></label>
+            <label class="switch"><input type="checkbox" data-dev="node_leds"><i></i>
+              <span>Light the chained node LEDs</span></label>
+            <label class="field"><span>Key 1 LED index</span>
+              <select data-dev="led_index_key1"><option value="0">0</option><option value="1">1</option></select>
+            </label>
+          </section>
+
+          <section class="card">
+            <header><h2>Mono panel</h2><p>The 8×8 LED matrix.</p></header>
+            <label class="field"><span>Brightness (0–7)</span>
+              <input type="range" min="0" max="7" data-dev="mono_brightness" data-out="out-mono">
+              <output id="out-mono"></output></label>
+            <label class="field"><span>Rotation</span>
+              <select data-dev="mono_rotation">
+                <option value="0">0°</option><option value="90">90°</option>
+                <option value="180">180°</option><option value="270">270°</option>
+              </select></label>
+            <label class="field"><span>Idle display</span>
+              <select data-dev="mono_idle">
+                <option value="letter">Layer letter</option><option value="blank">Blank</option>
+              </select></label>
+          </section>
+
+          <section class="card">
+            <header><h2>Chain Key &amp; layers</h2><p>Tap, double-tap and hold timing.</p></header>
+            <label class="switch"><input type="checkbox" data-dev="double_tap"><i></i>
+              <span>Double-tap actions</span></label>
+            <label class="field"><span>Double-tap window (ms)</span>
+              <input type="number" min="100" max="1000" data-dev="double_tap_ms"></label>
+            <label class="field" id="layer-hold-field"><span>Layer hold (ms)</span>
+              <input type="number" min="200" max="3000" data-dev="layer_hold_ms"></label>
+            <label class="field" id="boot-layer-field"><span>Boot layer</span>
+              <select data-dev="boot_layer" id="boot-layer"></select></label>
+          </section>
+
+          <section class="card">
+            <header><h2>Axes</h2><p>Flip a sign if a stick moves the wrong way.</p></header>
+            <div class="axis-grid" id="axis-grid"></div>
+          </section>
+        </div>
+        </div>
+      </section>
+
+      <!-- ================================ AUDIO ================================ -->
+      <section class="page" id="page-audio">
+        <div class="grid">
+          <section class="card span-2">
+            <header><h2>System volume</h2><p>The Windows master output, same endpoint the sidecar knob drives.</p></header>
+            <div class="volume-row">
+              <button class="btn btn-ghost" id="btn-mute">Mute</button>
+              <input type="range" min="0" max="100" id="volume" class="volume">
+              <output id="volume-out">—</output>
+            </div>
+            <p class="muted hidden" id="audio-unavailable">
+              Master volume control is unavailable on this system (pycaw/COM did not load).
+            </p>
+          </section>
+
+          <section class="card span-2">
+            <header><h2>Microphone</h2><p>Which input fethr records from. Takes effect on the next hold.</p></header>
+            <label class="field">
+              <span>Input device</span>
+              <select id="mic-select"><option value="">System default</option></select>
+            </label>
+            <div class="actions">
+              <button class="btn btn-ghost" id="btn-mic-refresh">Rescan devices</button>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <!-- ================================ ABOUT ================================ -->
+      <section class="page" id="page-about">
+        <div class="about">
+          <img class="about-mark" src="mark.svg" alt="" aria-hidden="true"
+               onerror="this.style.display='none'">
+          <h1>fethr</h1>
+          <p class="tagline">Light as a feather, free as your speech.</p>
+          <p class="blurb">
+            fethr is a tray app for Windows that turns any key into a push-to-talk
+            dictation button. Hold it, speak, let go — the transcript is pasted
+            straight into whatever window has focus. Speech recognition runs on
+            your own whisper.cpp server and the optional cleanup pass on your own
+            Ollama instance, so nothing you say leaves the machines you control.
+            A companion USB macro-pad, the <em>sidecar</em>, gives you dedicated
+            keys, joysticks and an LED panel, configured from the Sidecar page.
+          </p>
+          <div class="about-meta">
+            <span>Version <b id="about-version">0.1.0</b></span>
+            <span>Settings <code id="about-path">—</code></span>
+          </div>
+          <div class="actions center">
+            <button class="btn btn-primary" id="btn-github">
+              <svg class="ico"><use href="#i-link"/></svg> GitHub
+            </button>
+            <button class="btn btn-ghost" id="btn-open-folder">Open settings folder</button>
+            <button class="btn btn-ghost" id="btn-check-asr">Check ASR server</button>
+          </div>
+          <p class="muted" id="about-check"></p>
+          <p class="muted small">MIT licensed · © 2026 Kyle Maloney</p>
+        </div>
+      </section>
+
+    </div>
+  </main>
+</div>
+
+<div class="toast-stack" id="toasts"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

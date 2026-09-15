@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- fethr logo mark — placeholder. Original work, MIT-licensed with the app;
+     a designed version will replace it. Uses currentColor-independent gradient
+     stops so it reads on both the dark and light themes. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 80" width="256" height="80"
+     role="img" aria-label="fethr">
+  <defs>
+    <linearGradient id="fethrFeather" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#3FD0C9"/>
+      <stop offset="1" stop-color="#4DA3FF"/>
+    </linearGradient>
+  </defs>
+
+  <g transform="translate(8 8)">
+    <!-- quill / shaft -->
+    <path d="M56 6C44 4 29 10 22 21c-6 9-6 19-4 25L6 60"
+          fill="none" stroke="url(#fethrFeather)" stroke-width="4.5"
+          stroke-linecap="round"/>
+    <!-- blade -->
+    <path d="M56 6c3 15-2 30-14 35-8 3-17 3-23 0 0 0 4-16 14-25S56 6 56 6z"
+          fill="url(#fethrFeather)" opacity="0.88"/>
+    <!-- barb separations -->
+    <g stroke="#0E1218" stroke-width="2.6" stroke-linecap="round" opacity="0.45">
+      <path d="M22 42h14"/>
+      <path d="M28 32h14"/>
+      <path d="M35 22h11"/>
+    </g>
+  </g>
+
+  <text x="80" y="54" font-family="Inter, 'Segoe UI', system-ui, sans-serif"
+        font-size="42" font-weight="650" letter-spacing="-1.5"
+        fill="#4DA3FF">fethr</text>
+</svg>

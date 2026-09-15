@@ -1,0 +1,16 @@
+[Unit]
+Description=whisper-flow: whisper.cpp Vulkan dictation server (large-v3-turbo q8_0, Vulkan)
+After=network-online.target
+
+[Service]
+Type=simple
+Environment=GGML_VK_VISIBLE_DEVICES=0
+Environment=PATH=%h/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/whisper-flow/whisper.cpp/build/bin/whisper-server \
+  -m %h/whisper-flow/whisper.cpp/models/ggml-large-v3-turbo-q8_0.bin \
+  --host 0.0.0.0 --port 8890 -t 8 --convert
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

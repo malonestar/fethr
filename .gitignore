@@ -1,0 +1,24 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+.pytest_cache/
+.vscode/
+.idea/
+*.log
+settings.json
+
+# PlatformIO build + downloaded library sources. hardware/bin/ is NOT ignored:
+# the prebuilt images are part of a release.
+hardware/firmware/pio/.pio/
+
+# Vendor documentation bundle (M5Stack product pages, protocol PDFs). Locally
+# useful, not ours to redistribute.
+hardware/docs/
+
+# Logo working files (Canva candidates, UI review captures) - docs/images has the kept ones
+assets/candidates/
+assets/shots/
+assets/shots_on/

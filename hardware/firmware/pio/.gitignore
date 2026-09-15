@@ -1,0 +1,10 @@
+# PlatformIO build directory - toolchain output + fetched library sources.
+# Never commit this; `pio run` regenerates all of it.
+.pio/
+
+# Editor / IDE scratch
+.vscode/
+
+# Build transcripts written by the build helpers
+*.log
+*.err
