@@ -90,17 +90,26 @@ def test_is_sidecar_port_tolerates_a_missing_vid():
     assert is_sidecar_port(FakePort("COM7", product="fethr sidecar", vid=None)) is True
 
 
-def test_is_sidecar_port_rejects_other_espressif_devices():
-    assert is_sidecar_port(FakePort("COM4", product="ESP32-S3 USB JTAG")) is False
+def test_is_sidecar_port_accepts_any_espressif_port_as_candidate():
+    """Windows' usbser driver reports 'USB Serial Device' with product=None for
+    every Espressif board, so the VID alone must qualify a port; connect()
+    sorts the sidecar from other boards with the `hello` handshake."""
+    assert is_sidecar_port(FakePort("COM10", description="USB Serial Device (COM10)",
+                                    product=None)) is True
+    assert is_sidecar_port(FakePort("COM4", product="ESP32-S3 USB JTAG")) is True
 
 
-def test_is_sidecar_port_rejects_a_foreign_vid():
-    assert is_sidecar_port(FakePort("COM9", product="fethr sidecar", vid=0x2341)) is False
+def test_is_sidecar_port_name_is_authoritative_even_on_a_foreign_vid():
+    assert is_sidecar_port(FakePort("COM9", product="fethr sidecar", vid=0x2341)) is True
+
+
+def test_is_sidecar_port_rejects_unnamed_foreign_vid():
+    assert is_sidecar_port(FakePort("COM3", product="USB Serial", vid=0x2341)) is False
 
 
 def test_scan_ports_returns_only_matches():
     ports = [
-        FakePort("COM3", product="USB Serial"),
+        FakePort("COM3", product="USB Serial", vid=0x2341),
         FakePort("COM7", product="fethr sidecar"),
     ]
     found = scan_ports(lambda: ports)

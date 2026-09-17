@@ -163,7 +163,12 @@ def is_sidecar_port(info: Any) -> bool:
     ).lower()
     named = PRODUCT_MATCH in text
     vid = getattr(info, "vid", None)
-    return named and (vid is None or vid == VENDOR_ID)
+    # On Windows the built-in usbser driver reports the device as a generic
+    # "USB Serial Device (COMn)" with product=None, so the product string is
+    # only a bonus. Any Espressif-VID port is a candidate; connect() confirms
+    # with a `hello` and moves on if the port is something else (e.g. the
+    # AtomS3R companion plugged into USB, which answers nothing).
+    return named or vid == VENDOR_ID
 
 
 def scan_ports(lister: Callable[[], Iterable[Any]] | None = None) -> list[dict[str, Any]]:
@@ -301,7 +306,18 @@ class SidecarDevice:
             if not candidates:
                 self.last_error = "no sidecar detected"
                 return False
-            port = candidates[0]["port"]
+            # Try every candidate: on Windows all Espressif boards look alike,
+            # and only the sidecar answers `hello`.
+            for cand in candidates:
+                if self._connect_port(cand["port"]):
+                    return True
+            if not self.last_error:
+                self.last_error = "no sidecar answered hello"
+            return False
+        return self._connect_port(port)
+
+    def _connect_port(self, port: str) -> bool:
+        """Open one port and handshake; False (and closed) if it is not a sidecar."""
         try:
             handle = self._serial_factory(port)
         except Exception as exc:

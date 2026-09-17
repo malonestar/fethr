@@ -31,6 +31,7 @@
 
 #if FLOW_COMPANION
 #include <ArduinoJson.h>
+#include <driver/gpio.h> /* gpio_reset_pin() - see openOrder() */
 #endif
 
 #if FLOW_COMPANION
@@ -50,6 +51,10 @@ static int8_t   g_tx      = -1;
 
 static uint32_t g_last_rx     = 0;
 static uint32_t g_next_beacon = 0;
+static uint32_t g_next_ping   = 0;
+#ifndef COMPANION_PING_MS
+#define COMPANION_PING_MS 3000
+#endif
 static uint32_t g_next_batt   = 0;
 
 /* Knob forwarding (0.3.0). The knob can cross a detent every few milliseconds
@@ -289,6 +294,16 @@ static void openOrder(uint8_t order)
   g_tx    = g_order ? g_pin_a : g_pin_b;
 
   if (g_open) COMPANION_UART.end();
+  /* HardwareSerial::end() does not reliably return the old TX pin to a plain
+   * input; the GPIO matrix can leave it driven by the UART's TX signal. When
+   * that pin then becomes RX, the receiver only ever sees its own idle level
+   * and the companion's bytes never arrive - on both orders, for good. Seen
+   * on hardware 2026-09-15 (link only ever worked when the very first order
+   * was right). Reset both pins to a clean state before every begin(). */
+  gpio_reset_pin((gpio_num_t)g_pin_a);
+  gpio_reset_pin((gpio_num_t)g_pin_b);
+  pinMode(g_pin_a, INPUT_PULLUP);
+  pinMode(g_pin_b, INPUT_PULLUP);
   COMPANION_UART.begin(COMPANION_BAUD, SERIAL_8N1, g_rx, g_tx);
   g_open = true;
 
@@ -493,6 +508,17 @@ void companionTick(uint32_t now)
   if ((int32_t)(now - g_next_batt) >= 0) {
     g_next_batt = now + COMPANION_BATT_EVENT_MS;
     sendBattery();
+  }
+
+  /* Heartbeat. The companion drops the link after COMPANION_LINK_TIMEOUT_MS
+   * (10 s on the Atom) without ANY inbound line, and at idle nothing above
+   * fires for up to 30 s - seen on hardware 2026-09-15 as the Atom flipping to
+   * "waiting for sidecar" every half minute. Any line resets its timer, so a
+   * bare event every 3 s keeps it linked. */
+  if ((int32_t)(now - g_next_ping) >= 0) {
+    g_next_ping = now + COMPANION_PING_MS;
+    evBegin("ping");
+    evEnd();
   }
 }
 

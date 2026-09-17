@@ -222,7 +222,11 @@
 
 /* Unanswered `hello` beacons go out this often, alternating the pin order on
  * each attempt, until the companion replies. */
-#define COMPANION_PROBE_MS 1500
+/* NOT a divisor of the Atom's 3000 ms ping/hello period: at 1500 ms the pin
+ * order flip and the Atom's transmit were phase-locked and the reply could
+ * land in the wrong window every single time (seen on hardware 2026-09-15 -
+ * "probing" for minutes while the Atom happily displayed our beacons). */
+#define COMPANION_PROBE_MS 1100
 
 /* No inbound line for this long = the companion is gone; drop back to
  * probing. The companion pings every 3 s, so this is three missed pings. */
@@ -280,6 +284,7 @@
 #define FLOW_NODE_LEDS 1
 
 #define NODE_LED_MIN_INTERVAL_MS 100 /* <= 10 Hz per node                    */
+#define NODE_LED_SLOT_MS         120 /* guaranteed painter slot, see chainService */
 #define NODE_LED_JOY_THRESHOLD   16  /* min 0..255 change worth a bus write  */
 #define NODE_LED_JOY_IDLE_PCT    12  /* joystick LED brightness at centre, % */
 #define NODE_LED_TAP_MS          150 /* chain-key node flash on tap          */

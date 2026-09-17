@@ -39,7 +39,7 @@ Settings live in `%APPDATA%\fethr\settings.json`. You can edit them in the app o
 ## Requirements
 
 - Windows 10 or 11
-- Python 3.11 or newer (or [uv](https://docs.astral.sh/uv/), which will fetch one for you)
+- Python 3.11 or newer (or [uv](https://docs.astral.sh/uv/) **0.12 or newer**, which will fetch one for you — older uv builds a `pythonw.exe` that drags a console window along)
 - A whisper.cpp `server` build reachable over HTTP. It needs the `/inference` endpoint, which is the standard one. See [Setting up the server](#setting-up-the-server).
 - Optional: an Ollama instance with a model you like for the cleanup pass. I use Qwen3-14B.
 

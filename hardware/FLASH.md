@@ -14,7 +14,7 @@ type "Chain DualKey".
 
 ## 1. What to download
 
-From this repository, the folder [`bin/fethr-sidecar-0.1.0/`](bin/fethr-sidecar-0.1.0/).
+From this repository, the folder [`bin/fethr-sidecar-0.2.0/`](bin/fethr-sidecar-0.2.0/).
 You only need one file:
 
 **`firmware.factory.bin`** — everything merged into one image, written at offset `0x0`.

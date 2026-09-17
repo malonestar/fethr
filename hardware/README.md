@@ -113,7 +113,7 @@ hardware/
   PROTOCOL.md                   the device <-> app serial protocol
   COMPANION.md                  the optional AtomS3R companion display
   flash.ps1                     one-command flasher (Windows)
-  bin/fethr-sidecar-0.1.0/           prebuilt DualKey images + SHA256SUMS
+  bin/fethr-sidecar-0.2.0/           prebuilt DualKey images + SHA256SUMS
   bin/fethr-companion-atoms3r-0.1.0/ prebuilt AtomS3R images + SHA256SUMS
   research/
     chain_firmware_research.md  stock verdict, bus protocol, pins, API, gotchas
