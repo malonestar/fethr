@@ -23,7 +23,7 @@
 
 #include <Arduino.h>
 
-#define FLOW_SIDECAR_VERSION "0.2.0"
+#define FLOW_SIDECAR_VERSION "0.2.1"
 
 /* Host settings protocol revision (PROTOCOL.md). Bump only on a breaking
  * change to the wire format; the host checks it in the `hello` reply.
@@ -122,13 +122,16 @@
 /* Chain DualKey (ESP32-S3FN8) board pins                              */
 /* ================================================================== */
 
-/* The two on-board buttons, in M5's naming: Key1 is the one farther from the
- * lanyard hole. Which of them the firmware treats as "Key 1" is the RUNTIME
- * setting g_cfg.swap_keys (0.2.0, PROTOCOL.md) - the compile-time KEYS_SWAPPED
- * flag is gone. main.cpp::keysApplySwap() assigns these two GPIOs to
- * g_key[0]/g_key[1] and leds.cpp flips the LED index to match, both live. */
-#define PIN_KEY1      0  /* Key1 - the button farther from the lanyard hole */
-#define PIN_KEY2      17 /* Key2                                            */
+/* The two on-board buttons. fethr numbers them the way they sit on a desk with
+ * the USB-C cable pointing away from you: Key 1 on the LEFT, Key 2 on the
+ * RIGHT. That is the unswapped default (0.2.1 - 0.2.0 had them the other way
+ * round). Key 2 is the GPIO-0 boot button, the one farther from the lanyard
+ * hole, which is why FLASH.md says to hold Key 2 for download mode.
+ * If the cable points toward you instead, the RUNTIME setting g_cfg.swap_keys
+ * (PROTOCOL.md) trades them; main.cpp::keysApplySwap() assigns these two GPIOs
+ * to g_key[0]/g_key[1] and leds.cpp flips the LED index to match, both live. */
+#define PIN_KEY1      17 /* Key1 - left key, cable away from you (nearer the lanyard hole) */
+#define PIN_KEY2      0  /* Key2 - right key; the GPIO-0 boot button                       */
 #define PIN_LED_DATA  21 /* WS2812 data for the two on-board key LEDs       */
 #define PIN_LED_POWER 40 /* WS2812 power enable - MUST be driven HIGH       */
 #define NUM_LEDS      2
@@ -143,8 +146,8 @@
  * g_cfg.swap_keys is set, ledForKey() uses the other one for Key 1, because
  * swapping which physical button is Key 1 has to move its colour with it -
  * exactly what the old KEYS_SWAPPED #if did at compile time. */
-#define LED_INDEX_KEY1 1
-#define LED_INDEX_KEY2 0
+#define LED_INDEX_KEY1 0
+#define LED_INDEX_KEY2 1
 
 /* G7 (SWITCH_1) and G8 (SWITCH_2) are the 3-position side-switch sense lines.
  * They are deliberately NOT touched anywhere in this firmware: driving them as
@@ -227,7 +230,11 @@
 
 /* Unanswered `hello` beacons go out this often, alternating the pin order on
  * each attempt, until the companion replies. */
-#define COMPANION_PROBE_MS 1500
+/* NOT a divisor of the Atom's 3000 ms ping/hello period: at 1500 ms the pin
+ * order flip and the Atom's transmit were phase-locked and the reply could
+ * land in the wrong window every single time (seen on hardware 2026-09-15 -
+ * "probing" for minutes while the Atom happily displayed our beacons). */
+#define COMPANION_PROBE_MS 1100
 
 /* No inbound line for this long = the companion is gone; drop back to
  * probing. The companion pings every 3 s, so this is three missed pings. */
@@ -285,6 +292,7 @@
 #define FLOW_NODE_LEDS 1
 
 #define NODE_LED_MIN_INTERVAL_MS 100 /* <= 10 Hz per node                    */
+#define NODE_LED_SLOT_MS         120 /* guaranteed painter slot, see chainService */
 #define NODE_LED_JOY_THRESHOLD   16  /* min 0..255 change worth a bus write  */
 #define NODE_LED_JOY_IDLE_PCT    12  /* joystick LED brightness at centre, % */
 #define NODE_LED_TAP_MS          150 /* chain-key node flash on tap          */

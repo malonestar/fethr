@@ -60,6 +60,8 @@ touches them.
 
 ## What the FETHR layer does
 
+Key numbering assumes the DualKey sits with its USB-C cable pointing away from you: Key 1 is the left key, Key 2 the right. Cable toward you instead? Turn the DualKey 180° in the app's Layout tab and it swaps them on the device.
+
 | Input | Action | What the app does |
 |---|---|---|
 | Key 1 **hold** | F8 down / up | raw dictation, pasted at the cursor |
@@ -113,7 +115,7 @@ hardware/
   PROTOCOL.md                   the device <-> app serial protocol
   COMPANION.md                  the optional AtomS3R companion display
   flash.ps1                     one-command flasher (Windows)
-  bin/fethr-sidecar-0.2.0/           prebuilt DualKey images + SHA256SUMS
+  bin/fethr-sidecar-0.2.1/           prebuilt DualKey images + SHA256SUMS
   bin/fethr-companion-atoms3r-0.1.0/ prebuilt AtomS3R images + SHA256SUMS
   research/
     chain_firmware_research.md  stock verdict, bus protocol, pins, API, gotchas

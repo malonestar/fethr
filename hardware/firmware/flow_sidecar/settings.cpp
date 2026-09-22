@@ -95,7 +95,7 @@ void settingsDefaults(RuntimeConfig &c)
 
   c.nav_swap_xy    = 0;
   c.scroll_swap_xy = 0;
-  c.swap_keys      = 0; /* Key 1 = the button farther from the lanyard hole */
+  c.swap_keys      = 0; /* Key 1 = left key with the USB cable pointing away from you */
 }
 
 /* ================================================================== */

@@ -113,7 +113,8 @@ class ModuleSpec:
 MODULES: dict[str, ModuleSpec] = {
     # Two keys wide, and it can only be the right way up or upside down: the
     # USB socket has to face somewhere, and 90 degrees would put the keys on
-    # their side.  180 is "USB away from you", which is `swap_keys`.
+    # their side.  0 is "cable pointing away from you" (Key 1 on the left,
+    # the firmware's default); 180 is "cable toward you", which is `swap_keys`.
     "dualkey": ModuleSpec("DualKey", "DualKey", "dualkey.png", (6, 3), (0, 180),
                           ("key1", "key2"), chained=False),
     "key": ModuleSpec("Chain Key", "Key", "key.png", (3, 3), (0, 90, 180, 270),
@@ -211,7 +212,7 @@ def orientation_settings(
         raise ValueError(f"{module} cannot be mounted at {rotation}°")
 
     if module == "dualkey":
-        # 180° is USB-up, which puts the physical keys the other way round.
+        # 180° is cable-toward-you, which puts the physical keys the other way round.
         return {"swap_keys": rotation == 180}
 
     if module == "joystick":

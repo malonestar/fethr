@@ -22,6 +22,7 @@
  */
 
 #include "sidecar.h"
+#include <driver/gpio.h> /* gpio_reset_pin() - see busSelect() */
 
 /* ================================================================== */
 /* Bus + roles                                                         */
@@ -751,15 +752,11 @@ static void nodeLedsCompute(uint32_t now)
    *      full-brightness flash on tap ---- */
   if (g_key_id != 0) {
     uint8_t rgb[3];
-    bool    any_hold = g_key[0].hold_active || g_key[1].hold_active;
-    uint8_t hs       = hostState();
-    if (any_hold) {
-      /* Mirror the DualKey keys: solid red while a dictation hold is active,
-       * so the third key reads as "recording" too. */
-      rgb[0] = g_cfg.hold_rgb[0];
-      rgb[1] = g_cfg.hold_rgb[1];
-      rgb[2] = g_cfg.hold_rgb[2];
-    } else if (hs == HOST_TRANSCRIBING || hs == HOST_CLEANING) {
+    uint8_t hs = hostState();
+    /* Kyle's call 2026-09-15: only the key being held goes red; the Chain Key
+     * keeps its own colour during a hold and only reflects the host's
+     * working / landed / error states. */
+    if (hs == HOST_TRANSCRIBING || hs == HOST_CLEANING) {
       rgb[0] = 255; rgb[1] = 150; rgb[2] = 0; /* amber: server working */
     } else if (hs == HOST_PASTED && (now - hostStateSince()) < 600) {
       rgb[0] = 0; rgb[1] = 255; rgb[2] = 60;  /* green: text landed */
@@ -879,12 +876,18 @@ static const BusPins BUS_CANDIDATES[] = {
 static const uint8_t BUS_CANDIDATE_COUNT = sizeof(BUS_CANDIDATES) / sizeof(BUS_CANDIDATES[0]);
 static uint8_t       g_bus_index         = 0;
 static uint32_t      g_hotplug_check_at  = 0;
+static uint32_t      g_nl_slot_at        = 0; /* last guaranteed node-LED slot */
 
 static void busSelect(uint8_t index)
 {
   g_bus_index = (uint8_t)(index % BUS_CANDIDATE_COUNT);
   const BusPins &b = BUS_CANDIDATES[g_bus_index];
   CHAIN_UART.end();
+  /* Same trap as companion.cpp::openOrder(): a pin that was TX on the previous
+   * candidate can stay driven after end(), which would make it useless as RX. */
+  gpio_reset_pin((gpio_num_t)b.rx);
+  gpio_reset_pin((gpio_num_t)b.tx);
+  pinMode(b.rx, INPUT_PULLUP);
   M5Chain.begin(&CHAIN_UART, CHAIN_BAUD, b.rx, b.tx);
   FLOG("[chain] bus -> %s\r\n", b.name);
 }
@@ -959,6 +962,19 @@ void chainService(uint32_t now)
   /* The panel matters more than one extra input sample, and it only writes on
    * a state change, so give it first refusal. */
   if (monoService(now)) return;
+
+  /* Node LEDs get a GUARANTEED slot. With a full chain the input polls are due
+   * on nearly every pass (each transaction costs a few ms, the polls are due
+   * every 6-10 ms), so the "only when nothing else wanted the bus" call at the
+   * bottom never runs - seen on hardware 2026-09-15 as the Chain Key dark at
+   * idle unless it was the only node. One LED write per NODE_LED_SLOT_MS
+   * costs the inputs ~3% of the bus. */
+  if ((uint32_t)(now - g_nl_slot_at) >= NODE_LED_SLOT_MS) {
+    if (nodeLedsService(now)) {
+      g_nl_slot_at = now;
+      return;
+    }
+  }
 
   for (uint8_t n = 0; n < CHAIN_TASK_COUNT; n++) {
     uint8_t task = (uint8_t)((g_task_rr + n) % CHAIN_TASK_COUNT);

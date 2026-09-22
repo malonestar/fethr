@@ -14,7 +14,7 @@ its job when nothing answers.
 > sides and the protocol is symmetric with the one the app already uses, but no
 > AtomS3R has been attached to a DualKey yet. See "What is unverified" at the end.
 
-> **Both images must be current.** `bin/fethr-sidecar-0.2.0/` and
+> **Both images must be current.** `bin/fethr-sidecar-0.2.1/` and
 > `bin/fethr-companion-atoms3r-0.1.0/` were rebuilt together and belong together. An
 > older DualKey image sends no key legend, and the companion would sit on "no legend
 > yet" forever; an older companion image ignores the legend it is sent. Neither
@@ -120,7 +120,7 @@ A layer change from the button is the same event as one from the Chain Key or fr
 app, so every screen and the app all learn about it together.
 
 **If the sidecar builds only one layer** there is nothing to cycle to and a click does
-nothing; hold still identifies. The image in `bin/fethr-sidecar-0.2.0/` builds all four
+nothing; hold still identifies. The image in `bin/fethr-sidecar-0.2.1/` builds all four
 (`FLOW_EXTRA_LAYERS 1`), so on that build a click walks FETHR → MEDIA → EDIT → MOUSE.
 
 ## Flashing the Atom

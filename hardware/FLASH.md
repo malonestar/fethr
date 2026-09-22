@@ -14,7 +14,7 @@ type "Chain DualKey".
 
 ## 1. What to download
 
-From this repository, the folder [`bin/fethr-sidecar-0.2.0/`](bin/fethr-sidecar-0.2.0/).
+From this repository, the folder [`bin/fethr-sidecar-0.2.1/`](bin/fethr-sidecar-0.2.1/).
 You only need one file:
 
 **`firmware.factory.bin`** — everything merged into one image, written at offset `0x0`.
@@ -34,9 +34,10 @@ exist. So you do this by hand, **before every flash**:
 
 1. Move the 3-position side switch to the **middle** position.
 2. Unplug the USB-C cable.
-3. Press and **hold Key 1** — the key farther from the lanyard hole.
-4. Plug USB-C back in, still holding Key 1.
-5. Release Key 1.
+3. Press and **hold Key 2** — the key farther from the lanyard hole (it doubles as
+   the chip's boot button). With the cable pointing away from you that's the right-hand key.
+4. Plug USB-C back in, still holding Key 2.
+5. Release Key 2.
 
 A **new COM port appears** (Windows: Device Manager ▸ Ports; Linux: `/dev/ttyACM*`;
 macOS: `/dev/cu.usbmodem*`). That port is the ROM bootloader. If no new port shows up,

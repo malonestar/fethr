@@ -49,7 +49,7 @@ function Find-Image {
         throw "No bin\ folder beside this script - pass -Image with the path to firmware.factory.bin."
     }
     $candidate = Get-ChildItem -Path $binRoot -Recurse -Filter 'firmware.factory.bin' |
-                 Sort-Object Name -Descending | Select-Object -First 1
+                 Sort-Object FullName -Descending | Select-Object -First 1
     if (-not $candidate) {
         throw "No firmware.factory.bin under $binRoot - pass -Image explicitly."
     }
