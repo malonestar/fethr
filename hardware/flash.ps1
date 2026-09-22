@@ -122,7 +122,7 @@ Write-Host "  port  : $Port"
 Write-Host "  baud  : $Baud"
 Write-Host ""
 Write-Host "The board must be in DOWNLOAD MODE: side switch middle, unplug," -ForegroundColor Yellow
-Write-Host "hold Key 1, plug in, release. (FLASH.md step 2)" -ForegroundColor Yellow
+Write-Host "hold Key 2 (the key farther from the lanyard hole), plug in, release. (FLASH.md step 2)" -ForegroundColor Yellow
 
 if ($Erase) {
     Write-Host ""
@@ -139,9 +139,9 @@ Write-Host ""
 Write-Host "Flashed." -ForegroundColor Green
 Write-Host ""
 Write-Host "Next:"
-Write-Host "  1. Unplug and plug back in WITHOUT holding Key 1 (switch stays middle)."
+Write-Host "  1. Unplug and plug back in WITHOUT holding Key 2 (switch stays middle)."
 Write-Host "  2. Windows should show a keyboard named 'fethr sidecar'."
-Write-Host "  3. Key 1 lights dim blue, Key 2 dim violet; a Mono panel scrolls FLOW then shows F."
+Write-Host "  3. Key 1 lights dim blue, Key 2 dim violet; a Mono panel scrolls FETHR then shows the feather."
 Write-Host "  4. Start fethr, open Notepad, hold Key 1 and talk."
 Write-Host ""
 Write-Host "Full checklist: hardware/FLASH.md, section 4."
