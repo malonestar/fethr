@@ -220,3 +220,60 @@ def _wait(predicate, timeout: float = 2.0) -> None:
     deadline = time.time() + timeout
     while time.time() < deadline and not predicate():
         time.sleep(0.005)
+
+
+# ------------------------------------------------------ cleanup guard --
+
+from fethr.core.dictation import CLEANUP_EXAMPLES, cleanup_looks_sane  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "raw, cleaned, ok",
+    [
+        ("explain to me what multiplexing is", "Explain to me what multiplexing is.", True),
+        ("um so like the build is green", "So the build is green.", True),
+        ("hi", "Hi.", True),
+        ("hi", "Hi there, how can I help you today?", False),
+        ("explain to me what multiplexing is",
+         "Multiplexing is a technique that combines several signals into one "
+         "shared medium so that a single channel can carry many streams at once.", False),
+        ("explain to me what multiplexing is", "", False),
+        ("explain to me what multiplexing is", "   ", False),
+        ("one two three four five six seven eight nine ten", "One.", False),
+        ("", "Anything.", False),
+    ],
+)
+def test_cleanup_looks_sane(raw, cleaned, ok):
+    assert cleanup_looks_sane(raw, cleaned) is ok
+
+
+def test_cleanup_examples_pass_their_own_guard():
+    for spoken, tidied in CLEANUP_EXAMPLES:
+        assert cleanup_looks_sane(spoken, tidied), spoken
+
+
+def test_cleanup_rejects_an_answer(monkeypatch):
+    """The engine must paste the raw words when the model answers instead of edits."""
+    from fethr.core.dictation import DictationEngine
+    from fethr.core.settings import Settings
+
+    engine = DictationEngine(Settings())
+    sent = {}
+
+    class _Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"message": {"content": "Multiplexing is a way to " * 8}}
+
+    def fake_post(url, json=None, timeout=None, **kw):
+        sent["json"] = json
+        return _Resp()
+
+    monkeypatch.setattr(engine._session, "post", fake_post)
+    raw = "explain to me what multiplexing is"
+    assert engine.cleanup(raw) == raw
+    roles = [m["role"] for m in sent["json"]["messages"]]
+    assert roles[0] == "system" and roles[-1] == "user"
+    assert roles.count("assistant") == len(CLEANUP_EXAMPLES)
