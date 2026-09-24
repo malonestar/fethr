@@ -20,6 +20,7 @@ from .core.dictation import DictationEngine, EngineState, EventBus
 from .core.device import SidecarDevice
 from .core.settings import Settings, load_settings, save_settings, settings_path
 from .tray import FethrTray
+from .ui.overlay import OverlayManager
 from .ui.window import Api, WindowManager, run_smoke
 
 log = logging.getLogger("fethr")
@@ -49,6 +50,7 @@ class FethrApp:
 
         self.api = Api(self)
         self.window = WindowManager(self, self.api)
+        self.overlay = OverlayManager(self)
         self.tray = FethrTray(
             on_open=self.show_window,
             on_quit=self.quit,
@@ -93,6 +95,8 @@ class FethrApp:
         threading.Thread(target=self._probe_loop, name="fethr-probe", daemon=True).start()
 
         self.window.create(hidden=self.settings.ui.start_minimised and not smoke)
+        # Second, so the settings window stays pywebview's main window.
+        self.overlay.create()
         try:
             self.window.start(partial(run_smoke, self, 5.0) if smoke else None, debug=debug)
         finally:
@@ -108,6 +112,9 @@ class FethrApp:
         if self._quitting.is_set():
             return
         self._quitting.set()
+        # Overlay first: pywebview only returns from start() once EVERY
+        # window is gone, and the overlay has no close button of its own.
+        self.overlay.destroy()
         self.window.destroy()
 
     def shutdown(self) -> None:
@@ -115,6 +122,7 @@ class FethrApp:
         if self._stop.is_set():
             return
         self._stop.set()
+        self.overlay.destroy()
         self.engine.stop()
         self.device.stop()
         self.tray.stop()
@@ -141,6 +149,7 @@ class FethrApp:
         self.settings.update(patch)
         save_settings(self.settings, self.settings_file)
         self.engine.apply_settings(self.settings)
+        self.overlay.apply_settings()
         self.tray.refresh()
         return self.settings
 
@@ -227,6 +236,9 @@ class FethrApp:
             state = str(event.get("state", EngineState.IDLE.value))
             self.tray.set_state(state)
             self.device.send_state(state)
+        overlay = getattr(self, "overlay", None)  # absent on bare test doubles
+        if overlay is not None:
+            overlay.handle(event)
         self.window.push(event)
 
     def _on_device_event(self, event: dict[str, Any]) -> None:

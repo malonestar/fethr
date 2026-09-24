@@ -627,6 +627,17 @@ def _smoke_screenshots(app: Any) -> None:
     finally:
         _pin_window(win, False)
 
+    overlay = getattr(app, "overlay", None)
+    if overlay is not None:
+        from .overlay import (SMOKE_EVENTS, SMOKE_LONG_EVENTS,
+                              SMOKE_OVERFLOW_EVENTS, smoke_capture)
+
+        for name, events in (("overlay", SMOKE_EVENTS),
+                             ("overlay_long", SMOKE_LONG_EVENTS),
+                             ("overlay_overflow", SMOKE_OVERFLOW_EVENTS)):
+            if not smoke_capture(overlay, os.path.join(out_dir, f"{name}.png"), events):
+                log.warning("skipped the %s capture", name)
+
 
 def _window_scale(win: Any) -> float:
     """Physical pixels per logical pixel for this window (1.0 off Windows)."""
@@ -717,6 +728,9 @@ def run_smoke(app: Any, seconds: float = 5.0) -> None:
     try:
         if not app.window.wait_ready(timeout=20.0):
             raise RuntimeError("the page did not finish loading within 20 s")
+        overlay = getattr(app, "overlay", None)
+        if overlay is not None and not overlay.wait_ready(timeout=20.0):
+            raise RuntimeError("the overlay page did not finish loading within 20 s")
         app.show_window()
         time.sleep(seconds)
         _smoke_screenshots(app)

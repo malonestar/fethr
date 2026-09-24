@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fethr live</title>
+<!-- The live-transcript overlay (fethr/ui/overlay.py). Self-contained: no
+     app.css, no framework, one small script. It never takes focus; the
+     window is shown with SWP_NOACTIVATE from Python.
+
+     Sizing: the window is as tall as the transcript needs, up to a cap that
+     Python owns (40% of the work area). The page measures the natural height
+     of the flowing text (#flow) and reports it through the js_api
+     (window.pywebview.api.report_height); Python clamps it and resizes the
+     window upward from a fixed bottom edge. Past the cap, #text scrolls. -->
+<style>
+  :root {
+    --bg: rgba(17, 21, 28, 0.94);
+    --border: rgba(255, 255, 255, 0.08);
+    --text: #e8edf4;
+    --muted: #8b95a5;
+    --red: #ff5d5d;
+    --amber: #ffb547;
+    --green: #3ecf8e;
+    --line: 21.75px;            /* 15px * 1.45 */
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%; overflow: hidden;
+    background: #11151c; color: var(--text);
+    font: 15px/1.45 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+    user-select: none; -webkit-user-select: none; cursor: default;
+  }
+  /* Three columns: mark | flowing text | state. The state lives in its own
+     column, so it can never sit on top of the words, and it is aligned to the
+     top so it stays pinned top-right however tall the pill grows. */
+  .pill {
+    position: absolute; inset: 0;
+    display: grid;
+    grid-template-columns: 26px minmax(0, 1fr) auto;
+    grid-template-rows: minmax(0, 1fr);
+    column-gap: 14px;
+    align-items: start;
+    padding: 12px 16px 12px 14px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  .mark { width: 26px; height: 26px; margin-top: -2px; opacity: 0.95; }
+  .text {
+    align-self: stretch;
+    min-height: 0; max-height: 100%;
+    overflow-x: hidden; overflow-y: auto;
+    scrollbar-width: none;
+  }
+  .text::-webkit-scrollbar { display: none; }
+  .flow {
+    white-space: normal;
+    overflow-wrap: anywhere;    /* long URLs and tokens break too */
+    word-break: normal;
+  }
+  .sent { transition: opacity 125ms ease; }
+  .sent.swap { opacity: 0; }
+  .sent.fixed { color: #cfe6ff; }
+  .tent { opacity: 0.55; }
+  .placeholder { color: var(--muted); font-style: italic; }
+  .state {
+    display: flex; align-items: center; gap: 7px;
+    height: var(--line);
+    font-size: 12px; color: var(--muted); letter-spacing: 0.02em;
+    min-width: 92px; justify-content: flex-end; white-space: nowrap;
+  }
+  .dot {
+    width: 9px; height: 9px; border-radius: 50%;
+    background: var(--muted); flex: none;
+  }
+  .state.recording .dot { background: var(--red); animation: pulse 1.1s ease-in-out infinite; }
+  .state.recording { color: #ffb0b0; }
+  .state.transcribing .dot, .state.cleaning .dot { background: var(--amber); }
+  .state.transcribing, .state.cleaning { color: #ffd79a; }
+  .state.pasted .dot { display: none; }
+  .state.pasted { color: var(--green); }
+  .state.error .dot { background: var(--red); }
+  .state.error { color: var(--red); }
+  .check { display: none; width: 14px; height: 14px; }
+  .state.pasted .check { display: block; }
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(255, 93, 93, 0.55); opacity: 1; }
+    50%      { box-shadow: 0 0 0 6px rgba(255, 93, 93, 0); opacity: 0.7; }
+  }
+</style>
+</head>
+<body>
+<div class="pill" id="pill">
+  <img class="mark" src="mark.svg" alt="" aria-hidden="true">
+  <div class="text" id="text"><div class="flow" id="flow"><span class="placeholder" id="ph">Listening…</span></div></div>
+  <div class="state" id="state">
+    <i class="dot"></i>
+    <svg class="check" viewBox="0 0 16 16" aria-hidden="true">
+      <path d="M3 8.5l3.2 3L13 4.5" fill="none" stroke="currentColor"
+            stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    <span id="state-label">Listening</span>
+  </div>
+</div>
+<script>
+(function () {
+  'use strict';
+  var pillEl = document.getElementById('pill');
+  var textEl = document.getElementById('text');   // the scroller
+  var flowEl = document.getElementById('flow');   // the words, natural height
+  var phEl = document.getElementById('ph');
+  var stateEl = document.getElementById('state');
+  var labelEl = document.getElementById('state-label');
+
+  var LABELS = {
+    recording: 'Listening', transcribing: 'Transcribing', cleaning: 'Cleaning',
+    pasted: 'Pasted', error: 'Error'
+  };
+  var SWAP_HALF_MS = 125;   // fade out + fade in = 250 ms
+  var RESIZE_DEBOUNCE_MS = 80;
+
+  // id -> {el, text, clean}
+  var sentences = new Map();
+  var pendingEl = null, tentEl = null;
+
+  // Follow the newest words unless the user wheeled up to reread; the next
+  // `final` event (or a new session) snaps back to the bottom.
+  var stick = true;
+
+  function reset() {
+    sentences.clear();
+    flowEl.textContent = '';
+    pendingEl = document.createElement('span');
+    tentEl = document.createElement('span');
+    tentEl.className = 'tent';
+    flowEl.appendChild(pendingEl);
+    flowEl.appendChild(tentEl);
+    flowEl.appendChild(phEl);
+    phEl.style.display = '';
+    stick = true;
+    textEl.scrollTop = 0;
+  }
+
+  function setState(state) {
+    if (!LABELS[state]) return;            // idle keeps the last label
+    stateEl.className = 'state ' + state;
+    labelEl.textContent = LABELS[state];
+  }
+
+  function renderTranscript(t) {
+    if (!t) return;
+    var list = t.sentences || [];
+    var seen = new Set();
+    list.forEach(function (s) {
+      seen.add(s.id);
+      var shown = (s.clean != null && s.clean !== '') ? s.clean : (s.raw || '');
+      var isClean = shown === s.clean;
+      var entry = sentences.get(s.id);
+      if (!entry) {
+        // Inline spans in one flowing paragraph: wrapping is the browser's.
+        var el = document.createElement('span');
+        el.className = 'sent' + (isClean ? ' fixed' : '');
+        el.textContent = shown + ' ';
+        flowEl.insertBefore(el, pendingEl);
+        sentences.set(s.id, {el: el, text: shown, clean: isClean});
+        return;
+      }
+      if (entry.text === shown && entry.clean === isClean) return;
+      if (isClean && !entry.clean && entry.text !== shown) {
+        // The Wispr moment: the cleanup pass corrected this sentence. Only
+        // opacity animates, so nothing moves until the text itself swaps.
+        entry.el.classList.add('swap');
+        (function (e, txt) {
+          setTimeout(function () {
+            e.el.textContent = txt + ' ';
+            e.el.classList.add('fixed');
+            e.el.classList.remove('swap');
+            follow();
+          }, SWAP_HALF_MS);
+        })(entry, shown);
+      } else {
+        entry.el.textContent = shown + ' ';
+        entry.el.classList.toggle('fixed', isClean);
+      }
+      entry.text = shown;
+      entry.clean = isClean;
+    });
+    sentences.forEach(function (entry, id) {
+      if (!seen.has(id)) { entry.el.remove(); sentences.delete(id); }
+    });
+    var pending = t.pending || '';
+    var tentative = t.tentative || '';
+    pendingEl.textContent = pending + (pending && tentative ? ' ' : '');
+    tentEl.textContent = tentative;
+    phEl.style.display = (list.length || pending || tentative) ? 'none' : '';
+    follow();
+  }
+
+  function scrollToEnd() { textEl.scrollTop = textEl.scrollHeight; }
+  function follow() { if (stick) scrollToEnd(); }
+
+  // Only a wheel gesture means "the user scrolled"; our own scrollTop writes
+  // and window resizes never flip `stick` off.
+  textEl.addEventListener('wheel', function (e) {
+    if (e.deltaY < 0) { stick = false; return; }
+    // Wheeling back down to the bottom resumes following.
+    setTimeout(function () {
+      if (textEl.scrollHeight - textEl.scrollTop - textEl.clientHeight < 4) stick = true;
+    }, 0);
+  }, {passive: true});
+
+  // ---- sizing: tell Python how tall the pill wants to be -----------------
+
+  function desiredHeight() {
+    var cs = getComputedStyle(pillEl);
+    var chrome = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom) +
+                 parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth);
+    var line = parseFloat(getComputedStyle(flowEl).lineHeight) || 21.75;
+    return Math.ceil(Math.max(flowEl.getBoundingClientRect().height, line) + chrome);
+  }
+
+  var lastReported = -1, resizeTimer = null;
+  function report() {
+    resizeTimer = null;
+    var h = desiredHeight();
+    if (h === lastReported) return;
+    var api = window.pywebview && window.pywebview.api;
+    if (!api || typeof api.report_height !== 'function') return;  // retried on ready
+    lastReported = h;
+    try {
+      var p = api.report_height(h);
+      if (p && typeof p.catch === 'function') p.catch(function () { lastReported = -1; });
+    } catch (err) { lastReported = -1; }
+  }
+  function scheduleReport() {
+    if (resizeTimer) clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(report, RESIZE_DEBOUNCE_MS);
+  }
+  window.fethrMeasure = desiredHeight;               // for debugging / smoke
+  window.addEventListener('pywebviewready', function () { lastReported = -1; scheduleReport(); });
+
+  if (typeof ResizeObserver === 'function') {
+    // #flow changes size when words land AND when the window width changes
+    // (re-wrap); #text changes size when Python resizes the window.
+    new ResizeObserver(scheduleReport).observe(flowEl);
+    new ResizeObserver(follow).observe(textEl);
+  }
+
+  window.fethrEvent = function (ev) {
+    if (!ev || typeof ev !== 'object') return;
+    if (ev.type === 'state') {
+      if (ev.state === 'recording') reset();
+      setState(ev.state);
+    } else if (ev.type === 'live') {
+      if (ev.final) stick = true;
+      renderTranscript(ev.transcript);
+    }
+    scheduleReport();
+  };
+
+  reset();
+  setState('recording');
+})();
+</script>
+</body>
+</html>

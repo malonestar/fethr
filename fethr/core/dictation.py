@@ -15,6 +15,10 @@ Threading
   the key again while the previous transcript is still in flight works.
 * :class:`EventBus` owns one daemon dispatcher thread; subscriber callbacks
   run there and never on the hot path.
+* With ``dictation.live_transcribe`` on, each utterance also gets a
+  :class:`~fethr.core.streaming.LiveTranscriber` (two daemon threads of its
+  own) fed from the audio callback; it publishes ``{"type": "live", ...}``
+  events while the key is held.
 """
 
 from __future__ import annotations
@@ -33,6 +37,7 @@ from typing import Any, Callable
 import requests
 
 from .settings import Settings
+from .streaming import LiveTranscriber
 
 try:  # pragma: no cover - platform dependent
     import numpy as np
@@ -62,9 +67,15 @@ except Exception:  # pragma: no cover
 log = logging.getLogger(__name__)
 
 __all__ = [
+    "CLEANUP_CONTEXT_EXAMPLE",
     "CLEANUP_EXAMPLES",
+    "CLEANUP_KEEP_ALIVE",
     "CLEANUP_SYSTEM",
     "cleanup_looks_sane",
+    "cleanup_messages",
+    "cleanup_num_predict",
+    "cleanup_user_message",
+    "paste_suffix",
     "DictationEngine",
     "EngineState",
     "EventBus",
@@ -89,12 +100,52 @@ CLEANUP_SYSTEM = (
     "Do not add, remove, reorder, summarize, expand, translate or rephrase "
     "anything else. Keep every technical term, name, number and the "
     "speaker's own wording. When in doubt, leave it exactly as spoken.\n"
+    "A message may start with \"Context (do not repeat):\" followed by a "
+    "line starting \"Transcript:\". The context is text the speaker already "
+    "finished; use it only to understand the transcript (what \"it\" refers "
+    "to, what a correction corrects) and never output any of it. Edit and "
+    "output only the text after \"Transcript:\".\n"
     "Output only the edited transcript, nothing before or after it. /no_think"
 )
 
-#: What ``paste_after`` appends to a paste so consecutive dictations do not run
-#: together.  The stored transcript (and the re-paste key) never include it.
+#: How long Ollama keeps the cleanup model loaded after a request.  NOT -1:
+#: the box that serves it shares the model with other clients.
+CLEANUP_KEEP_ALIVE = "10m"
+
+#: Skip a warm-up if one ran this recently (seconds).
+WARMUP_INTERVAL_S = 300.0
+
+#: Named values ``paste_after`` still accepts from 0.2.x settings files.
 PASTE_SUFFIX = {"space": " ", "newline": "\n", "none": ""}
+
+_ESCAPES = {"n": "\n", "r": "\r", "t": "\t", "s": " ", "\\": "\\"}
+
+
+def paste_suffix(value: str | None) -> str:
+    """Turn the ``paste_after`` setting into the literal text appended to a paste.
+
+    The setting is typed by the user, so backslash escapes are honoured:
+    ``\\n`` new line, ``\\t`` tab, ``\\s`` space, ``\\\\`` a backslash.  Anything
+    else is taken literally.  The old keyword values still work.
+
+    >>> paste_suffix("space"), paste_suffix("\\n"), paste_suffix("--\\s"), paste_suffix("")
+    (' ', '\\n', '-- ', '')
+    """
+    if value is None:
+        return ""
+    if value in PASTE_SUFFIX:
+        return PASTE_SUFFIX[value]
+    out: list[str] = []
+    i = 0
+    while i < len(value):
+        ch = value[i]
+        if ch == "\\" and i + 1 < len(value) and value[i + 1] in _ESCAPES:
+            out.append(_ESCAPES[value[i + 1]])
+            i += 2
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
 
 #: Worked examples sent ahead of the real transcript.  Small local models
 #: follow a shown pattern far more reliably than a rule, and the first pair
@@ -108,6 +159,59 @@ CLEANUP_EXAMPLES = [
     ("can you write me a haiku about the ocean",
      "Can you write me a haiku about the ocean?"),
 ]
+
+#: One worked example of the context format used by live batching: the
+#: context is understood (``it`` = the fix) but never repeated.
+CLEANUP_CONTEXT_EXAMPLE = (
+    "Context (do not repeat): I pushed the fix to the main branch.\n"
+    "Transcript: and uh it built green on the first try",
+    "And it built green on the first try.",
+)
+
+
+def cleanup_user_message(text: str, context: str = "") -> str:
+    """The user turn for one cleanup request.
+
+    >>> cleanup_user_message("hi")
+    'hi'
+    >>> cleanup_user_message("and it works", "I fixed it.")
+    'Context (do not repeat): I fixed it.\\nTranscript: and it works'
+    """
+    context = " ".join((context or "").split())
+    if not context:
+        return text
+    return f"Context (do not repeat): {context}\nTranscript: {text}"
+
+
+def cleanup_messages(text: str, context: str = "") -> list[dict[str, str]]:
+    """System prompt + few-shot examples + the transcript, as chat messages.
+
+    Everything before the final user turn is identical for every request, so
+    Ollama can reuse its cached prompt prefix across calls (and the warm-up
+    request primes exactly that prefix).
+    """
+    messages: list[dict[str, str]] = [{"role": "system", "content": CLEANUP_SYSTEM}]
+    for spoken, tidied in (*CLEANUP_EXAMPLES, CLEANUP_CONTEXT_EXAMPLE):
+        messages.append({"role": "user", "content": spoken})
+        messages.append({"role": "assistant", "content": tidied})
+    messages.append({"role": "user", "content": cleanup_user_message(text, context)})
+    return messages
+
+
+def cleanup_num_predict(text: str) -> int:
+    """Token cap for a cleanup reply: ~2x the input's token estimate + 16.
+
+    An edit is about as long as its input, so this never truncates a real
+    edit but cuts a runaway reply (an answer, an essay) off cheaply.
+    Tokens are estimated at ~3.5 characters each, rounded up.
+
+    >>> cleanup_num_predict("")
+    16
+    >>> cleanup_num_predict("hello there")
+    24
+    """
+    est = -(-len(text) * 2 // 7)  # ceil(len / 3.5)
+    return 2 * est + 16
 
 
 def cleanup_looks_sane(raw: str, cleaned: str) -> bool:
@@ -252,16 +356,34 @@ class EventBus:
 
 
 class Recorder:
-    """Microphone capture into an in-memory 16 kHz mono WAV."""
+    """Microphone capture into an in-memory 16 kHz mono WAV.
+
+    ``on_frames``, when set, also receives every captured block (already
+    copied) from the audio callback — this is how live transcription taps the
+    stream.  It must be O(1).  The full clip is still buffered either way, so
+    :meth:`stop` always returns the whole WAV as a fallback.
+    """
 
     def __init__(self, sample_rate: int = 16000, min_seconds: float = 0.3,
-                 device: int | str | None = None) -> None:
+                 device: int | str | None = None,
+                 on_frames: Callable[[Any], None] | None = None) -> None:
         self.sample_rate = sample_rate
         self.min_seconds = min_seconds
         self.device = device
+        self.on_frames = on_frames
         self._frames: list[Any] = []
         self._stream: Any = None
         self._lock = threading.Lock()
+
+    def _callback(self, indata: Any, *_: Any) -> None:
+        block = indata.copy()
+        self._frames.append(block)
+        sink = self.on_frames
+        if sink is not None:
+            try:
+                sink(block)
+            except Exception:  # never let a tap kill the capture
+                pass
 
     def start(self) -> None:
         """Open the input stream and begin buffering frames."""
@@ -276,7 +398,7 @@ class Recorder:
                 channels=1,
                 dtype="int16",
                 device=self.device,
-                callback=lambda indata, *_: self._frames.append(indata.copy()),
+                callback=self._callback,
             )
             self._stream.start()
 
@@ -351,6 +473,9 @@ class DictationEngine:
         self._hooks: list[Any] = []
         self._session = requests.Session()
         self._running = False
+        self._live: LiveTranscriber | None = None
+        self._last_warmup: float | None = None
+        self._warmup_lock = threading.Lock()
 
     # -- lifecycle -------------------------------------------------------
 
@@ -455,14 +580,25 @@ class DictationEngine:
             if self._active_mode is not None:
                 return
             self._active_mode = mode
+        live = self._make_live(mode) if self.settings.dictation.live_transcribe else None
+        self._live = live
+        self.recorder.on_frames = live.feed if live is not None else None
         try:
             self.recorder.start()
         except Exception as exc:
             with self._state_lock:
                 self._active_mode = None
+            if live is not None:
+                live.cancel()
+            self._live = None
+            self.recorder.on_frames = None
             self._set_state(EngineState.ERROR, str(exc))
             self.beep(300, 400)
             return
+        if live is not None:
+            live.start()
+        if mode == "clean" and self.settings.dictation.cleanup_enabled:
+            self.warm_cleanup()
         self.beep(880, 60)
         self._set_state(EngineState.RECORDING, mode)
 
@@ -473,28 +609,63 @@ class DictationEngine:
                 return
             self._active_mode = None
         wav = self.recorder.stop()
+        self.recorder.on_frames = None
+        live, self._live = self._live, None
         self.beep(660, 60)
         if wav is None:
+            if live is not None:
+                live.cancel()
             self._set_state(EngineState.IDLE, "too short")
             return
         threading.Thread(
-            target=self._finish, args=(wav, mode), name="fethr-finish", daemon=True
+            target=self._finish, args=(wav, mode, live), name="fethr-finish", daemon=True
         ).start()
 
-    def _finish(self, wav: bytes, mode: str) -> None:
-        """Transcribe, optionally clean, then paste.  Runs off the hook thread."""
+    def _make_live(self, mode: str) -> LiveTranscriber:
+        """Build (but do not start) the live transcriber for one utterance.
+
+        ``raw`` mode never cleans — Key 1 / F8 stays words-as-spoken, just
+        live — while ``clean`` mode polishes each sentence as it completes.
+        """
+        cfg = self.settings.dictation
+
+        def emit(event: dict[str, Any]) -> None:
+            self.bus.emit({**event, "mode": mode})
+
+        return LiveTranscriber(
+            transcribe_fn=self.transcribe,
+            cleanup_fn=self.cleanup,
+            emit=emit,
+            sample_rate=cfg.sample_rate,
+            cleanup_enabled=(mode == "clean" and cfg.cleanup_enabled),
+        )
+
+    def _finish(self, wav: bytes, mode: str, live: LiveTranscriber | None = None) -> None:
+        """Transcribe, optionally clean, then paste.  Runs off the hook thread.
+
+        With a live transcriber most of the work already happened while the
+        key was held; :meth:`LiveTranscriber.finish` only transcribes the
+        tail.  If it comes back empty the whole clip goes through the
+        original one-shot path, so live mode can never lose an utterance.
+        """
         try:
             t0 = time.time()
             self._set_state(EngineState.TRANSCRIBING, mode)
-            text = self.transcribe(wav)
+            text = ""
+            raw = ""
+            if live is not None:
+                text = live.finish()
+                raw = live.raw_text
             if not text:
-                self.beep(300, 150)
-                self._set_state(EngineState.IDLE, "empty transcript")
-                return
-            raw = text
-            if mode == "clean" and self.settings.dictation.cleanup_enabled:
-                self._set_state(EngineState.CLEANING, mode)
-                text = self.cleanup(text)
+                text = self.transcribe(wav)
+                if not text:
+                    self.beep(300, 150)
+                    self._set_state(EngineState.IDLE, "empty transcript")
+                    return
+                raw = text
+                if mode == "clean" and self.settings.dictation.cleanup_enabled:
+                    self._set_state(EngineState.CLEANING, mode)
+                    text = self.cleanup(text)
             self.inject(text)
             elapsed_ms = int((time.time() - t0) * 1000)
             self.last_result.update(raw=raw, final=text, mode=mode)
@@ -547,15 +718,17 @@ class DictationEngine:
         response.raise_for_status()
         return scrub_transcript(response.json().get("text", ""))
 
-    def cleanup(self, text: str) -> str:
+    def cleanup(self, text: str, context: str = "") -> str:
         """Polish ``text`` with the local LLM; returns ``text`` unchanged on any
-        failure — cleanup is best-effort and must never lose a transcript."""
+        failure — cleanup is best-effort and must never lose a transcript.
+
+        ``context`` is already-final text that came just before ``text``.  It
+        is sent clearly marked as not-to-be-repeated, so a pronoun or a
+        self-correction crossing a sentence boundary is tidied right; the
+        sanity guard still compares the reply against ``text`` alone.
+        """
         cfg = self.settings.dictation
-        messages: list[dict[str, str]] = [{"role": "system", "content": CLEANUP_SYSTEM}]
-        for spoken, tidied in CLEANUP_EXAMPLES:
-            messages.append({"role": "user", "content": spoken})
-            messages.append({"role": "assistant", "content": tidied})
-        messages.append({"role": "user", "content": text})
+        messages = cleanup_messages(text, context)
         try:
             response = self._session.post(
                 cfg.cleanup_url.rstrip("/") + "/api/chat",
@@ -564,7 +737,8 @@ class DictationEngine:
                     "messages": messages,
                     "stream": False,
                     "think": False,
-                    "options": {"temperature": 0.1},
+                    "keep_alive": CLEANUP_KEEP_ALIVE,
+                    "options": {"temperature": 0.1, "num_predict": cleanup_num_predict(text)},
                 },
                 timeout=cfg.cleanup_timeout,
             )
@@ -581,6 +755,42 @@ class DictationEngine:
             log.info("cleanup skipped: %s", exc)
             return text
 
+    def warm_cleanup(self) -> bool:
+        """Load the cleanup model and its prompt prefix, without blocking.
+
+        Fires one tiny request (the full system prompt and examples, a
+        one-word transcript, ``num_predict: 1``) on a daemon thread, so by
+        the time the first real sentence commits the model is resident and
+        the shared prefix is cached.  Skipped when a warm-up started less
+        than :data:`WARMUP_INTERVAL_S` ago.  Returns True if one was started.
+        """
+        now = time.monotonic()
+        with self._warmup_lock:
+            if self._last_warmup is not None and now - self._last_warmup < WARMUP_INTERVAL_S:
+                return False
+            self._last_warmup = now
+        threading.Thread(target=self._warmup_request, name="fethr-warmup", daemon=True).start()
+        return True
+
+    def _warmup_request(self) -> None:
+        """The warm-up request itself (blocking).  Never raises."""
+        cfg = self.settings.dictation
+        try:
+            self._session.post(
+                cfg.cleanup_url.rstrip("/") + "/api/chat",
+                json={
+                    "model": cfg.cleanup_model,
+                    "messages": cleanup_messages("ok"),
+                    "stream": False,
+                    "think": False,
+                    "keep_alive": CLEANUP_KEEP_ALIVE,
+                    "options": {"temperature": 0.1, "num_predict": 1},
+                },
+                timeout=cfg.cleanup_timeout,
+            )
+        except Exception as exc:
+            log.debug("cleanup warm-up failed: %s", exc)
+
     # -- output ----------------------------------------------------------
 
     def inject(self, text: str) -> None:
@@ -588,7 +798,7 @@ class DictationEngine:
         if not text or pyperclip is None or keyboard is None:
             return
         cfg = self.settings.dictation
-        text = text + PASTE_SUFFIX.get(cfg.paste_after, "")
+        text = text + paste_suffix(cfg.paste_after)
         old = None
         if cfg.restore_clipboard:
             try:

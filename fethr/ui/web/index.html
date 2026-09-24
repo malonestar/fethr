@@ -185,13 +185,14 @@
               <input type="checkbox" data-path="dictation.restore_clipboard">
               <i></i><span>Restore previous clipboard</span>
             </label>
+            <label class="switch">
+              <input type="checkbox" data-path="ui.live_overlay">
+              <i></i><span>Live transcript overlay while dictating</span>
+            </label>
             <label class="field">
               <span>After each paste</span>
-              <select data-path="dictation.paste_after">
-                <option value="space">add a space</option>
-                <option value="newline">add a new line</option>
-                <option value="none">nothing</option>
-              </select>
+              <input type="text" data-path="dictation.paste_after" placeholder="\s" spellcheck="false">
+              <small>Typed after every paste. <code>\s</code> space, <code>\n</code> new line, <code>\t</code> tab; anything else literal. Leave empty for nothing.</small>
             </label>
             <label class="field">
               <span>Restore delay (s)</span>

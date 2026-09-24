@@ -54,6 +54,7 @@ LEGACY_KEY_MAP: dict[str, str] = {
     "language": "dictation.language",
     "sample_rate": "dictation.sample_rate",
     "min_seconds": "dictation.min_seconds",
+    "live_transcribe": "dictation.live_transcribe",
     "restore_clipboard": "dictation.restore_clipboard",
     "clipboard_restore_delay": "dictation.clipboard_restore_delay",
     "paste_after": "dictation.paste_after",
@@ -74,6 +75,10 @@ class DictationSettings:
     language: str = "en"
     sample_rate: int = 16000
     min_seconds: float = 0.3
+    #: Re-transcribe while the key is held and commit stable text as it
+    #: settles (see :mod:`fethr.core.streaming`).  Off = one request per
+    #: utterance, the original behaviour.
+    live_transcribe: bool = True
 
     cleanup_enabled: bool = True
     cleanup_url: str = "http://127.0.0.1:11434"
@@ -88,8 +93,9 @@ class DictationSettings:
     restore_clipboard: bool = True
     clipboard_restore_delay: float = 1.0
     #: Appended to every paste so the next dictation lands with a gap between
-    #: them.  "space" / "newline" / "none".
-    paste_after: str = "space"
+    #: them.  Typed by the user; backslash escapes (\\n \\t \\s) are honoured,
+    #: see :func:`fethr.core.dictation.paste_suffix`.  Default: one space.
+    paste_after: str = "\\s"
 
 
 @dataclass
@@ -123,6 +129,9 @@ class UISettings:
     window_width: int = 960
     window_height: int = 640
     start_minimised: bool = True
+    #: Float the live transcript in a small pill near the bottom of the
+    #: screen while the dictation key is held (see :mod:`fethr.ui.overlay`).
+    live_overlay: bool = True
 
 
 @dataclass

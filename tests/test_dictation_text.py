@@ -276,7 +276,8 @@ def test_cleanup_rejects_an_answer(monkeypatch):
     assert engine.cleanup(raw) == raw
     roles = [m["role"] for m in sent["json"]["messages"]]
     assert roles[0] == "system" and roles[-1] == "user"
-    assert roles.count("assistant") == len(CLEANUP_EXAMPLES)
+    assert roles.count("assistant") == len(CLEANUP_EXAMPLES) + 1  # + the context example
+    assert sent["json"]["messages"][-1]["content"] == raw  # no context -> bare transcript
 
 
 def test_inject_appends_paste_suffix(monkeypatch):
@@ -294,9 +295,144 @@ def test_inject_appends_paste_suffix(monkeypatch):
     engine = d.DictationEngine(s)
     engine.inject("hello")
     assert copied[-1] == "hello "
-    s.dictation.paste_after = "newline"
+    s.dictation.paste_after = "\\n"
     engine.inject("hello")
     assert copied[-1] == "hello\n"
-    s.dictation.paste_after = "none"
+    s.dictation.paste_after = ""
     engine.inject("hello")
     assert copied[-1] == "hello"
+
+
+@pytest.mark.parametrize("value, expected", [
+    ("space", " "), ("newline", "\n"), ("none", ""), (None, ""),
+    ("\\s", " "), ("\\n", "\n"), ("\\n\\n", "\n\n"), ("\\t", "\t"),
+    (" ", " "), ("", ""), (" -- ", " -- "), ("\\\\", "\\"), ("\\x", "\\x"),
+])
+def test_paste_suffix(value, expected):
+    from fethr.core.dictation import paste_suffix
+    assert paste_suffix(value) == expected
+
+
+# ------------------------------------------- cleanup request shape (live) --
+
+
+class _RecordingSession:
+    """Records posted JSON bodies; replies with a fixed cleaned text."""
+
+    def __init__(self, reply: str = "Fine."):
+        self.bodies: list[dict] = []
+        self.reply = reply
+
+    def post(self, url, json=None, timeout=None, **kw):
+        self.bodies.append(json)
+        reply = self.reply
+
+        class _R:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"message": {"content": reply}}
+
+        return _R()
+
+
+def test_cleanup_sends_context_marked_do_not_repeat_and_guards_transcript_only():
+    from fethr.core.dictation import DictationEngine
+    from fethr.core.settings import Settings
+
+    engine = DictationEngine(Settings())
+    engine._session = _RecordingSession("And it built green.")
+    context = "I pushed the fix to main. " * 6  # far longer than the transcript
+    assert engine.cleanup("and uh it built green", context=context) == "And it built green."
+    body = engine._session.bodies[0]
+    last = body["messages"][-1]["content"]
+    assert last.startswith("Context (do not repeat): I pushed the fix")
+    assert last.endswith("\nTranscript: and uh it built green")
+    assert "\n" not in last.split("\nTranscript:")[0]  # context collapsed to one line
+
+
+def test_cleanup_request_options_are_shared_box_safe():
+    from fethr.core.dictation import CLEANUP_KEEP_ALIVE, DictationEngine, cleanup_num_predict
+    from fethr.core.settings import Settings
+
+    engine = DictationEngine(Settings())
+    engine._session = _RecordingSession("Hello there.")
+    engine.cleanup("hello there")
+    body = engine._session.bodies[0]
+    assert body["think"] is False
+    assert body["keep_alive"] == CLEANUP_KEEP_ALIVE == "10m"
+    assert body["keep_alive"] != -1
+    assert body["options"]["num_predict"] == cleanup_num_predict("hello there")
+
+
+def test_cleanup_num_predict_scales_with_input():
+    from fethr.core.dictation import cleanup_num_predict
+
+    assert cleanup_num_predict("") == 16
+    short, long = cleanup_num_predict("a b c"), cleanup_num_predict("word " * 100)
+    assert short < long
+    assert long >= 2 * (500 // 4)  # never below ~2x a generous token estimate
+
+
+def test_cleanup_prompt_prefix_is_identical_across_requests():
+    """The shared prefix is what Ollama caches and the warm-up primes."""
+    from fethr.core.dictation import cleanup_messages
+
+    a = cleanup_messages("one thing")
+    b = cleanup_messages("another thing", context="Earlier text.")
+    assert a[:-1] == b[:-1]
+
+
+def test_warm_cleanup_is_tiny_and_throttled(monkeypatch):
+    import time as _time
+
+    from fethr.core import dictation as d
+    from fethr.core.settings import Settings
+
+    engine = d.DictationEngine(Settings())
+    engine._session = _RecordingSession("ok")
+    assert engine.warm_cleanup() is True
+    deadline = _time.time() + 2
+    while not engine._session.bodies and _time.time() < deadline:
+        _time.sleep(0.005)
+    body = engine._session.bodies[0]
+    assert body["options"]["num_predict"] == 1
+    assert body["keep_alive"] == "10m"
+    assert body["messages"][0]["content"] == d.CLEANUP_SYSTEM
+    assert engine.warm_cleanup() is False  # within 5 minutes: skipped
+    engine._last_warmup -= d.WARMUP_INTERVAL_S + 1
+    assert engine.warm_cleanup() is True
+
+
+def test_press_in_clean_mode_warms_up_but_raw_mode_does_not():
+    from fethr.core.dictation import DictationEngine, EventBus
+    from fethr.core.settings import Settings
+
+    settings = Settings()
+    settings.dictation.beeps = False
+    settings.dictation.live_transcribe = False
+    engine = DictationEngine(settings, EventBus())
+    warmed: list[bool] = []
+    engine.warm_cleanup = lambda: warmed.append(True) or True  # type: ignore[method-assign]
+
+    class _Mic:
+        on_frames = None
+
+        def start(self):
+            pass
+
+        def stop(self):
+            return None
+
+    engine.recorder = _Mic()  # type: ignore[assignment]
+    engine.on_press("raw")
+    engine.on_release("raw")
+    assert warmed == []
+    engine.on_press("clean")
+    engine.on_release("clean")
+    assert warmed == [True]
+    settings.dictation.cleanup_enabled = False
+    engine.on_press("clean")
+    engine.on_release("clean")
+    assert warmed == [True]
