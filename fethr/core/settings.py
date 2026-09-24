@@ -56,6 +56,7 @@ LEGACY_KEY_MAP: dict[str, str] = {
     "min_seconds": "dictation.min_seconds",
     "restore_clipboard": "dictation.restore_clipboard",
     "clipboard_restore_delay": "dictation.clipboard_restore_delay",
+    "paste_after": "dictation.paste_after",
     "beeps": "dictation.beeps",
 }
 
@@ -86,6 +87,9 @@ class DictationSettings:
     beeps: bool = True
     restore_clipboard: bool = True
     clipboard_restore_delay: float = 1.0
+    #: Appended to every paste so the next dictation lands with a gap between
+    #: them.  "space" / "newline" / "none".
+    paste_after: str = "space"
 
 
 @dataclass

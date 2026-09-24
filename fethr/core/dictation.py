@@ -92,6 +92,11 @@ CLEANUP_SYSTEM = (
     "Output only the edited transcript, nothing before or after it. /no_think"
 )
 
+#: What ``paste_after`` appends to a paste so consecutive dictations do not run
+#: together.  The stored transcript (and the re-paste key) never include it.
+PASTE_SUFFIX = {"space": " ", "newline": "
+", "none": ""}
+
 #: Worked examples sent ahead of the real transcript.  Small local models
 #: follow a shown pattern far more reliably than a rule, and the first pair
 #: is the exact failure we saw: a dictated question came back answered.
@@ -584,6 +589,7 @@ class DictationEngine:
         if not text or pyperclip is None or keyboard is None:
             return
         cfg = self.settings.dictation
+        text = text + PASTE_SUFFIX.get(cfg.paste_after, "")
         old = None
         if cfg.restore_clipboard:
             try:

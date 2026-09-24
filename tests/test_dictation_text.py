@@ -277,3 +277,26 @@ def test_cleanup_rejects_an_answer(monkeypatch):
     roles = [m["role"] for m in sent["json"]["messages"]]
     assert roles[0] == "system" and roles[-1] == "user"
     assert roles.count("assistant") == len(CLEANUP_EXAMPLES)
+
+
+def test_inject_appends_paste_suffix(monkeypatch):
+    import fethr.core.dictation as d
+    from fethr.core.settings import Settings
+
+    copied = []
+    monkeypatch.setattr(d, "pyperclip", type("P", (), {
+        "copy": staticmethod(lambda t: copied.append(t)),
+        "paste": staticmethod(lambda: "old"),
+    }))
+    monkeypatch.setattr(d, "keyboard", type("K", (), {"send": staticmethod(lambda k: None)}))
+    s = Settings()
+    s.dictation.restore_clipboard = False
+    engine = d.DictationEngine(s)
+    engine.inject("hello")
+    assert copied[-1] == "hello "
+    s.dictation.paste_after = "newline"
+    engine.inject("hello")
+    assert copied[-1] == "hello\n"
+    s.dictation.paste_after = "none"
+    engine.inject("hello")
+    assert copied[-1] == "hello"
