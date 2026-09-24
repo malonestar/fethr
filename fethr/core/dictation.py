@@ -94,8 +94,7 @@ CLEANUP_SYSTEM = (
 
 #: What ``paste_after`` appends to a paste so consecutive dictations do not run
 #: together.  The stored transcript (and the re-paste key) never include it.
-PASTE_SUFFIX = {"space": " ", "newline": "
-", "none": ""}
+PASTE_SUFFIX = {"space": " ", "newline": "\n", "none": ""}
 
 #: Worked examples sent ahead of the real transcript.  Small local models
 #: follow a shown pattern far more reliably than a rule, and the first pair
