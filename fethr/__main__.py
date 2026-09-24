@@ -281,9 +281,20 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     """Console-script entry point.  Returns the process exit code."""
     args = _parse_args(argv)
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    try:  # pythonw has no console, so keep a rolling file next to settings.json
+        from logging.handlers import RotatingFileHandler
+        from .core.settings import settings_dir
+        log_dir = settings_dir()
+        log_dir.mkdir(parents=True, exist_ok=True)
+        handlers.append(RotatingFileHandler(
+            log_dir / "fethr.log", maxBytes=1_000_000, backupCount=2, encoding="utf-8"))
+    except Exception:
+        pass
     logging.basicConfig(
         level=getattr(logging, args.log_level),
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+        handlers=handlers,
     )
     try:
         app = FethrApp(settings_file=Path(args.settings) if args.settings else None)

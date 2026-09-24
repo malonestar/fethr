@@ -1,20 +1,39 @@
 {
   "dictation": {
     "asr_url": "http://127.0.0.1:8890",
+    "asr_timeout": 30,
+    "language": "en",
+    "sample_rate": 16000,
+    "min_seconds": 0.3,
+    "live_transcribe": true,
+    "cleanup_enabled": true,
     "cleanup_url": "http://127.0.0.1:11434",
-    "cleanup_model": "qwen3:14b"
+    "cleanup_model": "qwen3:14b",
+    "cleanup_timeout": 25,
+    "hotkey_raw": "f8",
+    "hotkey_clean": "f9",
+    "hotkey_repaste": "f7",
+    "beeps": true,
+    "restore_clipboard": true,
+    "clipboard_restore_delay": 1.0,
+    "paste_after": "\\s"
+  },
+  "audio": {
+    "input_device": null
+  },
+  "sidecar": {
+    "auto_connect": true,
+    "notify_on_paste": false,
+    "layout": {}
   },
   "ui": {
     "theme": "dark",
     "window_width": 1180,
     "window_height": 760,
-    "start_minimised": false
+    "start_minimised": false,
+    "live_overlay": true
   },
   "first_run": false,
   "legacy_imported": "disabled-for-capture",
-  "sidecar_enabled": true,
-  "sidecar": {
-    "auto_connect": true,
-    "layout": {}
-  }
+  "sidecar_enabled": true
 }

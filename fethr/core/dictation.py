@@ -807,7 +807,14 @@ class DictationEngine:
                 old = None
         pyperclip.copy(text)
         time.sleep(0.05)
-        keyboard.send("ctrl+v")
+        try:
+            back = pyperclip.paste()
+            ok = back == text
+        except Exception as exc:
+            ok = f"readback failed: {exc}"
+        log.info("paste %d chars -> %s clipboard_ok=%s", len(text), _foreground_window(), ok)
+        if not _send_ctrl_v():
+            keyboard.send("ctrl+v")
         if old is not None:
             def restore() -> None:
                 time.sleep(cfg.clipboard_restore_delay)
@@ -878,6 +885,60 @@ class DictationEngine:
                 "ms": int((time.time() - t0) * 1000),
                 "error": str(exc),
             }
+
+
+def _send_ctrl_v() -> bool:
+    """Type Ctrl+V with a raw Win32 SendInput; returns False off Windows or on failure.
+
+    Independent of the ``keyboard`` library's modifier bookkeeping, which is
+    the one piece of the paste path we cannot see into from a log.
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        KEYEVENTF_KEYUP = 0x0002
+        VK_CONTROL, VK_V = 0x11, 0x56
+
+        class KEYBDINPUT(ctypes.Structure):
+            _fields_ = [("wVk", wintypes.WORD), ("wScan", wintypes.WORD),
+                        ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD),
+                        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong))]
+
+        class INPUT(ctypes.Structure):
+            class _U(ctypes.Union):
+                _fields_ = [("ki", KEYBDINPUT), ("pad", ctypes.c_byte * 32)]
+            _anonymous_ = ("u",)
+            _fields_ = [("type", wintypes.DWORD), ("u", _U)]
+
+        def key(vk: int, up: bool = False) -> INPUT:
+            i = INPUT()
+            i.type = 1  # INPUT_KEYBOARD
+            i.ki = KEYBDINPUT(vk, 0, KEYEVENTF_KEYUP if up else 0, 0, None)
+            return i
+
+        seq = (INPUT * 4)(key(VK_CONTROL), key(VK_V), key(VK_V, True), key(VK_CONTROL, True))
+        sent = ctypes.windll.user32.SendInput(4, seq, ctypes.sizeof(INPUT))
+        log.info("SendInput ctrl+v -> %d/4", sent)
+        return sent == 4
+    except Exception as exc:
+        log.info("SendInput unavailable: %s", exc)
+        return False
+
+
+def _foreground_window() -> str:
+    """Title + class of the window that will receive the paste (Windows only)."""
+    try:
+        import ctypes
+        u = ctypes.windll.user32
+        hwnd = u.GetForegroundWindow()
+        title = ctypes.create_unicode_buffer(256)
+        cls = ctypes.create_unicode_buffer(64)
+        u.GetWindowTextW(hwnd, title, 256)
+        u.GetClassNameW(hwnd, cls, 64)
+        return f"{title.value!r} [{cls.value}] hwnd={hwnd}"
+    except Exception:
+        return "?"
 
 
 def _probe(session: requests.Session, url: str, timeout: float) -> ProbeResult:

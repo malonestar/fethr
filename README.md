@@ -8,16 +8,19 @@
 
 ## What it is
 
-fethr is a small tray app. You hold a key, talk, and let go. Whatever you said gets pasted at the cursor in whichever window has focus — editor, browser, chat, terminal, doesn't matter.
+fethr is a small tray app. You hold a key, talk, and let go. Whatever you said gets pasted at the cursor in whichever window has focus — editor, browser, chat, terminal, doesn't matter. While you're talking the words show up in a small bar at the bottom of the screen, and with the cleaned key each sentence tidies itself up a beat after it lands.
 
 The speech recognition runs on a [whisper.cpp](https://github.com/ggml-org/whisper.cpp) server that you host. That can be the same PC, or a box with a GPU somewhere on your LAN or tailnet. There's an optional cleanup pass that sends the transcript through a local LLM on [Ollama](https://ollama.com) to strip filler words, fix punctuation, and apply the "no wait, I meant..." corrections you make while talking.
 
 I built it as a replacement for Wispr Flow. The idea is the same, the difference is that nothing here phones home and there's nothing to pay for.
 
-There's also an optional hardware piece — a little USB macro-pad built from M5Stack Chain modules — covered further down. The app works fine without it.
+**fethr is standalone software.** Everything above works with nothing but a keyboard and a whisper server. Further down there's a hardware section about a little USB macro-pad built from M5Stack Chain modules — that's a side project I did for fun on top of the app, and it's entirely optional. If you never plug one in, the Sidecar page just says so and nothing else changes.
 
 <p align="center">
   <img src="docs/images/dictation.png" width="720" alt="fethr settings window, Dictation page">
+</p>
+<p align="center">
+  <img src="docs/images/overlay_long.png" width="720" alt="the live transcript bar during a long dictation: settled words solid, the last few dimmed">
 </p>
 
 ## How it works
@@ -26,15 +29,17 @@ Three hotkeys, all configurable from the settings window:
 
 | Key | Action | What happens |
 |---|---|---|
-| **F8** (hold) | raw dictation | Recording starts when you press, stops when you release. Audio goes to whisper.cpp, the text comes back and is pasted. On a modest GPU over a LAN this is well under a second for a sentence. |
-| **F9** (hold) | cleaned dictation | Same, plus one round trip through Ollama before pasting. Adds about a second. |
+| **F8** (hold) | raw dictation | Recording starts when you press, stops when you release. Words appear in a small floating bar as you talk; on release the text is pasted. No LLM involved. |
+| **F9** (hold) | cleaned dictation | Same, and each sentence is sent through Ollama as soon as it's complete, so it tidies itself up in the bar while you keep talking. On release there's usually nothing left to wait for. |
 | **F7** (tap) | re-paste | Pastes the last transcript again. Useful when you dictated into the wrong window. |
 
-The paste is a normal clipboard paste (Ctrl+V). Your previous clipboard contents are put back a second later. You get a short beep on press, another on release, and a chirp when the text lands, so you don't have to watch the screen.
+**Live transcription.** whisper isn't a streaming model, so fethr does what the commercial tools do: every second and a half it re-sends the audio since the last settled point and keeps whatever two passes in a row agreed on. Settled words show solid in the bar, the last few show dimmed until the next pass confirms them. When you let go only the tail still needs transcribing, which is why long dictations paste almost immediately. The bar grows upward as you talk, never takes focus, and can be turned off (or the whole live mode with it) under Feedback & clipboard.
+
+The paste is a normal clipboard paste (Ctrl+V), followed by whatever you put in *After each paste* (a space by default, `\n` for a new line). Your previous clipboard contents are put back a second later. You get a short beep on press, another on release, and a chirp when the text lands, so you don't have to watch the screen.
 
 Everything runs in one process: the keyboard hooks, the tray icon, and the settings window. The settings window is a local web page rendered in a native window (pywebview) — no browser, no server, no network access at runtime.
 
-Settings live in `%APPDATA%\fethr\settings.json`. You can edit them in the app or by hand.
+Settings live in `%APPDATA%\fethr\settings.json`. You can edit them in the app or by hand. A log lands next to it as `fethr.log`.
 
 ## Requirements
 
@@ -89,7 +94,9 @@ For the cleanup pass, install Ollama, pull a model, and put the URL and model na
 
 There's no iOS app, but a Shortcut gets you most of the way: record, send to the same whisper server over your tailnet or VPN, copy the result to the clipboard. Setup is in [docs/IPHONE_SHORTCUT.md](docs/IPHONE_SHORTCUT.md). iOS doesn't let a third-party app type into other apps, so it's record → paste rather than record → text appears.
 
-## The hardware layer: the sidecar
+## The hardware layer: the sidecar (optional)
+
+> You don't need any of this. fethr is the app above; the sidecar is a desk toy I built on top of it because I had the parts. Skip this section unless you want one too.
 
 <p align="center">
   <img src="docs/images/sidecar.png" width="720" alt="fethr Sidecar page: the chain builder, with the modules laid out on a grid and joined by the bus connector">
@@ -118,7 +125,7 @@ The order of the chain isn't editable, because it isn't yours to choose — it's
 
 **Companion display (optional).** The DualKey has two Chain ports and the bus only needs one, so the spare one can carry a second screen: an [AtomS3R](https://docs.m5stack.com/en/core/AtomS3R) on an [Atomic ToChain Base](https://docs.m5stack.com/en/accessory/Atomic_ToChain_Base), which shows the current layer and the dictation state in colour on a 128×128 LCD and cycles layers when you press it. It's a second controller on a plain UART rather than a Chain node, with its own firmware in `hardware/firmware/companion-atoms3r/`; the DualKey works out which port and which cable orientation on its own. [hardware/COMPANION.md](hardware/COMPANION.md) covers it. Untested on hardware so far.
 
-**Flashing.** You don't need a toolchain. Prebuilt images are in `hardware/bin/`, and [hardware/FLASH.md](hardware/FLASH.md) walks through it: put the DualKey in download mode (it has no reset button — switch to middle, hold Key 1, plug in), then flash with Espressif's browser flasher or `esptool`. Building from source is a PlatformIO project in `hardware/firmware/pio/`; notes on what's been verified against real hardware are in [hardware/README.md](hardware/README.md). The serial protocol between the device and the app is in [hardware/PROTOCOL.md](hardware/PROTOCOL.md).
+**Flashing.** You don't need a toolchain. Prebuilt images are in `hardware/bin/`, and [hardware/FLASH.md](hardware/FLASH.md) walks through it: put the DualKey in download mode (it has no reset button — switch to middle, hold Key 2, plug in), then flash with Espressif's browser flasher or `esptool`. Building from source is a PlatformIO project in `hardware/firmware/pio/`; notes on what's been verified against real hardware are in [hardware/README.md](hardware/README.md). The serial protocol between the device and the app is in [hardware/PROTOCOL.md](hardware/PROTOCOL.md).
 
 Once it's flashed, turn on **Enable sidecar** in the app's Sidecar page. With it off, fethr never touches a serial port.
 
@@ -141,9 +148,9 @@ tests/            pytest — runs without a mic, GPU or device
 
 ## Status
 
-- Dictation: in daily use.
+- Dictation, live transcript bar, cleanup pass: in daily use.
 - Settings app: working, tested on Windows 11.
-- Sidecar firmware: first layer (dictation) — compiles clean, hardware bring-up in progress. The unknowns are listed in the firmware notes. More layers after that.
+- Sidecar (optional hardware): firmware 0.2.1 on a real desk, all four layers, companion display working. See `hardware/README.md` for what's verified.
 - macOS/Linux: not supported yet. The engine is mostly portable; the keyboard hook and paste injection are the Windows-specific parts.
 
 ## Contributing

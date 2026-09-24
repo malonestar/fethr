@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fethr"
-version = "0.2.1"
+version = "0.3.0"
 description = "Local-first dictation for Windows. Hold a key, speak, release — the text lands at your cursor."
 readme = "README.md"
 license = { text = "MIT" }
