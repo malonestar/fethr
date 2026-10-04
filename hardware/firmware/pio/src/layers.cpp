@@ -37,10 +37,10 @@ const LayerConfig DEFAULT_LAYERS[] = {
      G_F,
      {ACT_KEY_HOLD, KEY_F8, MOD_NONE, FN_DICT_RAW},   /* Key1 hold -> raw dictation     */
      {ACT_KEY_HOLD, KEY_F9, MOD_NONE, FN_DICT_CLEAN}, /* Key2 hold -> cleaned dictation */
-     {ACT_KEY_TAP, KEY_F7, MOD_NONE, FN_REPASTE},     /* ChainKey tap -> re-paste       */
+     {ACT_KEY_TAP, KEY_RETURN, MOD_NONE, FN_ENTER},    /* ChainKey tap -> Enter (send)   */
      {ACT_CHORD_TAP, 'z', MOD_CTRL, FN_UNDO},         /* ChainKey double -> undo paste  */
      NAV_ARROWS,
-     {ACT_KEY_TAP, KEY_RETURN, MOD_NONE, FN_ENTER},
+     {ACT_KEY_TAP, KEY_F7, MOD_NONE, FN_REPASTE},     /* stick push -> re-paste last    */
      SCROLL_WHEEL_PAN,
      {ACT_MOUSE_BTN, MOUSE_MIDDLE, MOD_NONE, FN_MOUSE_M},
      ANGLE_VOLUME},

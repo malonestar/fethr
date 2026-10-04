@@ -108,8 +108,8 @@ The sidecar is a small desk device built from [M5Stack Chain](https://docs.m5sta
 | Module | What it does in fethr |
 |---|---|
 | [Chain DualKey](https://docs.m5stack.com/en/chain/Chain_DualKey) | Key 1 held = raw dictation, Key 2 held = cleaned. LEDs show each key's function and go red while you're recording. |
-| [Chain Key](https://docs.m5stack.com/en/chain/Chain_Key) | Tap = re-paste. Double-tap = undo the paste. |
-| [Chain Joystick](https://docs.m5stack.com/en/chain/Chain_Joystick) ×2 | One is arrow keys and Enter, the other is scroll wheel and middle click. |
+| [Chain Key](https://docs.m5stack.com/en/chain/Chain_Key) | Tap = Enter (send what you just dictated). Double-tap = undo the paste. |
+| [Chain Joystick](https://docs.m5stack.com/en/chain/Chain_Joystick) ×2 | One is arrow keys and re-paste on push, the other is scroll wheel and middle click. |
 | [Chain Angle](https://docs.m5stack.com/en/chain/Chain_Angle) | Volume knob. |
 | [Chain Mono](https://docs.m5stack.com/en/chain/Chain_Mono) | 8×8 LED panel. Mic while you're recording, a spinner while the server is working, a check when the text lands, a volume bar when you turn the knob. |
 

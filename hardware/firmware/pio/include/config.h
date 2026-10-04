@@ -18,7 +18,7 @@
 
 #include <Arduino.h>
 
-#define FLOW_SIDECAR_VERSION "0.2.1"
+#define FLOW_SIDECAR_VERSION "0.2.2"
 
 /* Host settings protocol revision (PROTOCOL.md). Bump only on a breaking
  * change to the wire format; the host checks it in the `hello` reply.

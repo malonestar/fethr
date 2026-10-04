@@ -24,8 +24,8 @@ double-tap work as normal.
 | Part | Role | Notes |
 |---|---|---|
 | [Chain DualKey](https://docs.m5stack.com/en/chain/Chain_DualKey) (ESP32-S3) | Brain, USB HID, 2 keys, 2 RGB LEDs | The only programmable unit; two Chain ports |
-| [Chain Key](https://docs.m5stack.com/en/chain/Chain_Key) | Third key: re-paste / undo | STM32 node, 2 RGB |
-| [Chain Joystick](https://docs.m5stack.com/en/chain/Chain_Joystick) ×2 | Nav stick (arrows + Enter), scroll stick (wheel/pan + middle click) | Hall-effect, ±4095 mapped, click button |
+| [Chain Key](https://docs.m5stack.com/en/chain/Chain_Key) | Third key: Enter / undo | STM32 node, 2 RGB |
+| [Chain Joystick](https://docs.m5stack.com/en/chain/Chain_Joystick) ×2 | Nav stick (arrows + re-paste on push), scroll stick (wheel/pan + middle click) | Hall-effect, ±4095 mapped, click button |
 | [Chain Angle](https://docs.m5stack.com/en/chain/Chain_Angle) | Knob → volume | 12-bit pot, 280°, **no button** |
 | [Chain Mono](https://docs.m5stack.com/en/chain/Chain_Mono) | 8×8 LED panel: recording indicator and status | Output only |
 
@@ -66,9 +66,9 @@ Key numbering assumes the DualKey sits with its USB-C cable pointing away from y
 |---|---|---|
 | Key 1 **hold** | F8 down / up | raw dictation, pasted at the cursor |
 | Key 2 **hold** | F9 down / up | dictation plus the LLM cleanup pass |
-| Chain Key **tap** | F7 | paste the last transcript again |
+| Chain Key **tap** | Enter | send what you just dictated |
 | Chain Key **double-tap** | Ctrl+Z | undo that paste |
-| Nav stick | arrow keys with auto-repeat; click = Enter | |
+| Nav stick | arrow keys with auto-repeat; click = F7 | paste the last transcript again |
 | Scroll stick | wheel ∝ deflection, X pans; click = middle click | |
 | Angle knob | volume up/down, 24 detents | |
 

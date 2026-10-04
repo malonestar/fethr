@@ -61,7 +61,7 @@ The resting screen is a **key legend for the layer you are on**:
   ├────────────────────┤   nodes and battery in the corners
   │ K1 hold: dictate   │
   │ K2 hold: clean     │   one row per key
-  │ K3: repaste        │
+  │ K3: ENTER          │
   │                    │
   │ stick arrows / vol │   the stick and the knob
   │ ▄▄▄▄▄▄▄▄░░░░░░░░░░ │   knob position, while it is turning
@@ -169,7 +169,7 @@ sidecar : fw 0.1.0
 layer   : 0/4 FETHR  rgb=0,90,255
 legend 0: K1 hold: dictate
 legend 1: K2 hold: clean
-legend 2: K3: repaste
+legend 2: K3: ENTER
 legend 3: stick arrows / vol
 state   : idle
 host    : seen
