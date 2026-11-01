@@ -208,13 +208,31 @@ class Api:
         """Switch the device to layer ``index`` (0–3)."""
         return self._device_call(lambda d: d.set_layer(int(index)))
 
-    def device_reconnect(self) -> dict[str, Any]:
-        """Drop the port and immediately rescan for the sidecar."""
+    def device_connect(self) -> dict[str, Any]:
+        """Probe every Espressif port now, whatever the connect mode (Connect button)."""
         device = self._app.device
-        device.disconnect()
-        ok = device.connect()
+        try:
+            ok = device.find_and_connect()
+        except Exception as exc:  # never let the bridge raise into the page
+            log.exception("device_connect failed")
+            return {"ok": False, "error": str(exc), "status": device.snapshot()}
         return {"ok": ok, "error": "" if ok else device.last_error,
                 "status": device.snapshot()}
+
+    def device_reconnect(self) -> dict[str, Any]:
+        """Drop the port and immediately rescan for the sidecar."""
+        self._app.device.disconnect()
+        return self.device_connect()
+
+    def device_forget_port(self) -> dict[str, Any]:
+        """Forget the remembered COM port (``sidecar.last_port``)."""
+        try:
+            self._app.forget_sidecar_port()
+        except Exception as exc:
+            log.exception("device_forget_port failed")
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "status": self._app.device.snapshot(),
+                "settings": self._app.settings.to_dict()}
 
     # -- chain builder ---------------------------------------------------
 

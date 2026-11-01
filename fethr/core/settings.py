@@ -111,7 +111,14 @@ class SidecarSettings:
     """Host-side preferences for the USB macro-pad (device config lives on
     the device itself, in NVS — see ``fethr.core.device``)."""
 
-    auto_connect: bool = True
+    #: ``"auto"``: look for the sidecar on its own (remembered port, plus each
+    #: Espressif board once per plug-in).  ``"manual"``: only the remembered
+    #: port is ever tried unasked; everything else waits for the Connect
+    #: button — the safe choice when you flash other ESP32 boards on this PC.
+    #: Replaces the old ``auto_connect`` bool (see :func:`_migrate`).
+    connect_mode: str = "auto"
+    #: COM port the sidecar last answered ``hello`` on; ``None`` = never seen.
+    last_port: str | None = None
     #: Show a toast/Mono message when a transcript is pasted.
     notify_on_paste: bool = False
     #: Chain-builder canvas: where each module sits and which way it faces.
@@ -163,9 +170,10 @@ class Settings:
         """Build settings from ``data``, ignoring unknown keys.
 
         Missing keys keep their defaults, so a settings file written by an
-        older version of fethr always loads.
+        older version of fethr always loads; renamed keys are carried across
+        by :func:`_migrate`.
         """
-        return _build(cls, data or {})
+        return _build(cls, _migrate(data or {}))
 
     # -- mutation --------------------------------------------------------
 
@@ -329,6 +337,36 @@ def save_settings(settings: Settings, path: Path | None = None) -> Path:
 # --------------------------------------------------------------------------
 # internals
 # --------------------------------------------------------------------------
+
+
+#: Accepted values of ``sidecar.connect_mode``; anything else loads as "auto".
+CONNECT_MODES = ("auto", "manual")
+
+
+def _migrate(data: dict[str, Any]) -> dict[str, Any]:
+    """Rewrite keys from older settings files onto the current names.
+
+    Returns a new dict; ``data`` is left alone.
+
+    * ``sidecar.auto_connect`` (bool, ≤ 0.3.0) → ``sidecar.connect_mode``:
+      ``false`` → ``"manual"``, ``true`` → ``"auto"``.  An explicit
+      ``connect_mode`` in the same file wins.
+    """
+    if not isinstance(data, dict):
+        return {}
+    sidecar = data.get("sidecar")
+    if not isinstance(sidecar, dict):
+        return data
+    sidecar = dict(sidecar)
+    if "auto_connect" in sidecar:
+        legacy = sidecar.pop("auto_connect")
+        if "connect_mode" not in sidecar:
+            on = _coerce(legacy, "bool") if legacy is not None else True
+            sidecar["connect_mode"] = "auto" if on else "manual"
+    if "connect_mode" in sidecar:
+        mode = str(sidecar["connect_mode"] or "").strip().lower()
+        sidecar["connect_mode"] = mode if mode in CONNECT_MODES else "auto"
+    return {**data, "sidecar": sidecar}
 
 
 def _build(cls: type, data: dict[str, Any]) -> Any:

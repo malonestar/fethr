@@ -15,6 +15,15 @@ Threading
 One reader thread per connection (blocking ``readline``), plus one supervisor
 thread that scans for the device and reconnects after an unplug.  Callers block
 only inside :meth:`request`, on a per-request queue.
+
+Scan policy
+-----------
+Every Espressif board looks the same to Windows (VID 0x303A, product None), so
+the only way to tell the sidecar from someone's dev board is to open the port
+and send ``hello``.  Doing that blindly every couple of seconds steals the port
+from esptool / PlatformIO mid-upload.  So the supervisor is deliberately shy;
+see :meth:`SidecarDevice.tick` for the exact rules of the two connect modes
+(``"auto"`` and ``"manual"``).
 """
 
 from __future__ import annotations
@@ -22,6 +31,7 @@ from __future__ import annotations
 import itertools
 import json
 import logging
+import re
 import threading
 import time
 from typing import Any, Callable, Iterable
@@ -29,6 +39,7 @@ from typing import Any, Callable, Iterable
 log = logging.getLogger(__name__)
 
 __all__ = [
+    "CONNECT_MODES",
     "DEFAULT_CONFIG",
     "LAYER_NAMES",
     "PRODUCT_MATCH",
@@ -46,6 +57,48 @@ __all__ = [
 VENDOR_ID = 0x303A
 #: Substring required in the USB product/description string.
 PRODUCT_MATCH = "fethr"
+
+#: ``"auto"``: probe the remembered port, plus each Espressif port once per
+#: plug-in.  ``"manual"``: never probe anything on its own except the
+#: remembered port; everything else waits for :meth:`SidecarDevice.find_and_connect`.
+CONNECT_MODES = ("auto", "manual")
+
+#: Seconds to wait for the ``hello`` reply on a candidate port.  Short on
+#: purpose: a port that is not the sidecar answers nothing, and every second
+#: we hold it is a second some other tool cannot open it.
+HELLO_TIMEOUT_S = 1.5
+
+#: A port that is busy (open in another program) is re-tried on this many later
+#: supervisor ticks before it is written off until it re-enumerates.  Covers the
+#: moment right after plug-in when Windows briefly refuses the open, without
+#: camping on a board esptool is flashing.
+BUSY_RETRY_TICKS = 3
+
+
+def normalise_connect_mode(mode: Any) -> str:
+    """Map anything onto a member of :data:`CONNECT_MODES` (default ``"auto"``)."""
+    text = str(mode or "").strip().lower()
+    return text if text in CONNECT_MODES else "auto"
+
+
+def _port_key(name: str) -> tuple:
+    """Natural sort for port names: COM5 before COM12, /dev/ttyACM2 before 10."""
+    return tuple(int(p) if p.isdigit() else p.lower()
+                 for p in re.split(r"(\d+)", str(name)))
+
+
+def _is_busy_error(exc: BaseException) -> bool:
+    """True if opening a port failed because something else has it open.
+
+    pyserial on Windows wraps the OS error in ``SerialException("could not open
+    port 'COM10': PermissionError(13, 'Access is denied.', None, 5)")``, so the
+    text is checked as well as the type.
+    """
+    if isinstance(exc, PermissionError):
+        return True
+    text = str(exc).lower()
+    return any(s in text for s in ("access is denied", "permissionerror",
+                                   "resource busy", "in use"))
 
 #: Protocol version that added runtime layout and editable actions
 #: (``PROTOCOL.md`` §"v2 additions": ``get_layers``, ``set_action``,
@@ -221,13 +274,34 @@ class SidecarDevice:
         baudrate: int = 115200,
         reconnect_interval: float = 2.0,
         enabled: bool = True,
+        connect_mode: str = "auto",
+        preferred_port: str | None = None,
+        on_port_remembered: Callable[[str | None], None] | None = None,
+        hello_timeout: float = HELLO_TIMEOUT_S,
     ) -> None:
         self.on_event = on_event
         self.baudrate = baudrate
         self.reconnect_interval = reconnect_interval
+        self.hello_timeout = hello_timeout
         self._serial_factory = serial_factory or self._open_serial
         self._port_lister = port_lister
         self._enabled = bool(enabled)
+
+        #: ``"auto"`` or ``"manual"`` — see :meth:`tick`.
+        self.connect_mode: str = normalise_connect_mode(connect_mode)
+        #: The port the sidecar last answered ``hello`` on (persisted by the app
+        #: as ``sidecar.last_port``).  Tried first, in either mode.
+        self.preferred_port: str | None = preferred_port or None
+        #: Called with the new port after a handshake on a different port than
+        #: before, and with ``None`` from :meth:`forget_port`.
+        self.on_port_remembered = on_port_remembered
+
+        # Scan bookkeeping, owned by tick()/find_and_connect() under _scan_lock.
+        self._scan_lock = threading.Lock()
+        self._seen: set[str] = set()       # Espressif ports present last tick
+        self._failed: set[str] = set()     # no hello; skip until re-enumerated
+        self._busy: dict[str, int] = {}    # busy port -> ticks it has been busy
+        self._fresh = True                 # next tick treats every port as new
 
         self._serial: Any = None
         self._port: str | None = None
@@ -278,6 +352,7 @@ class SidecarDevice:
         """
         if not self._enabled or self._supervisor is not None:
             return
+        self.reset_scan()
         self._stop.clear()
         self._supervisor = threading.Thread(
             target=self._supervise, name="fethr-sidecar-supervisor", daemon=True
@@ -291,39 +366,199 @@ class SidecarDevice:
         self._supervisor = None
 
     def connect(self, port: str | None = None) -> bool:
-        """Open ``port`` (or the first detected sidecar) and handshake.
+        """Open ``port``, or with no port do a full :meth:`find_and_connect`.
+
+        This is the explicit, user-initiated path (the Connect / Reconnect
+        buttons); the supervisor never calls it — it calls :meth:`tick`.
 
         Returns:
             True if the port opened and ``hello`` was answered.
+        """
+        if port is None:
+            return self.find_and_connect()
+        if not self._enabled:
+            self.last_error = "sidecar disabled"
+            return False
+        if self.connected:
+            return True
+        with self._scan_lock:
+            return self._try_port(port) == "ok"
+
+    def find_and_connect(self) -> bool:
+        """Probe every Espressif port, regardless of mode, and keep the winner.
+
+        The remembered port goes first.  Ports that failed before are tried
+        again — the user asked.  Each port is held for at most
+        :attr:`hello_timeout` seconds.
+
+        Returns:
+            True if some port answered ``hello``.
         """
         if not self._enabled:
             self.last_error = "sidecar disabled"
             return False
         if self.connected:
             return True
-        if port is None:
-            candidates = scan_ports(self._port_lister)
-            if not candidates:
+        with self._scan_lock:
+            present = [c["port"] for c in scan_ports(self._port_lister)]
+            if not present:
                 self.last_error = "no sidecar detected"
                 return False
-            # Try every candidate: on Windows all Espressif boards look alike,
-            # and only the sidecar answers `hello`.
-            for cand in candidates:
-                if self._connect_port(cand["port"]):
+            order = sorted(present,
+                           key=lambda p: (p != self.preferred_port, _port_key(p)))
+            errors: list[str] = []
+            for port in order:
+                result = self._try_port(port)
+                if result == "ok":
                     return True
-            if not self.last_error:
-                self.last_error = "no sidecar answered hello"
+                errors.append(self.last_error)
+                if result == "failed":
+                    self._failed.add(port)
+            self.last_error = "; ".join(e for e in errors if e) or "no sidecar answered hello"
             return False
-        return self._connect_port(port)
+
+    def tick(self) -> bool:
+        """One supervisor pass: decide which ports (if any) to probe, and probe them.
+
+        Called every :attr:`reconnect_interval` seconds by the supervisor
+        thread; public so tests can drive it deterministically.
+
+        Rules, in order:
+
+        * **Bookkeeping, every tick, even while connected**: list Espressif
+          ports (listing opens nothing).  A port that has disappeared is
+          forgotten from the failed/busy sets, so it is eligible again the
+          next time it appears.
+        * **Connected**: nothing else.
+        * **Remembered port** (:attr:`preferred_port`): if that exact name is
+          present and has not already failed since it appeared, try it — in
+          *both* modes.  That is the user's own sidecar coming back after a
+          replug on the same USB socket.
+        * **manual**: that is all.  Every other port waits for an explicit
+          :meth:`find_and_connect`.
+        * **auto**: also probe each port that has *newly appeared* since the
+          previous tick (the first tick after :meth:`start`, or after
+          switching to auto, treats every present port as new).  A port that
+          did not answer is not retried until it disappears and reappears, so
+          a dev board sitting on the desk is probed at most once per plug-in.
+
+        A port that is busy (another program has it open) is skipped without
+        waiting; it is retried on up to :data:`BUSY_RETRY_TICKS` later ticks
+        (Windows briefly refuses opens right after enumeration) and then
+        written off until it re-enumerates.  The remembered port gets the same
+        grace when it does not answer ``hello`` (the firmware may still be
+        booting); any other port gets exactly one ``hello``.
+
+        Honest limit of **auto**: pressing BOOT/RESET or esptool's own reset
+        into the bootloader re-enumerates the board, so it can look "new" for
+        exactly one tick and be probed for up to :attr:`hello_timeout` seconds
+        at the worst possible moment.  If you flash other ESP32 boards on this
+        machine, use **manual**, which never touches a port that is not the
+        remembered one.
+
+        Returns:
+            True if connected at the end of the tick.
+        """
+        if not self._enabled:
+            return False
+        with self._scan_lock:
+            present = {c["port"] for c in scan_ports(self._port_lister)}
+            new = set(present) if self._fresh else present - self._seen
+            self._fresh = False
+            self._seen = present
+            self._failed &= present
+            self._busy = {p: n for p, n in self._busy.items() if p in present}
+
+            if self.connected:
+                return True
+
+            candidates: list[str] = []
+            pref = self.preferred_port
+            if pref and pref in present and pref not in self._failed:
+                candidates.append(pref)
+            if self.connect_mode == "auto":
+                retry_busy = [p for p in sorted(self._busy, key=_port_key)
+                              if p not in candidates]
+                fresh = [p for p in sorted(new, key=_port_key)
+                         if p not in self._failed and p not in candidates
+                         and p not in retry_busy]
+                candidates += retry_busy + fresh
+
+            for port in candidates:  # each port at most once per tick
+                result = self._try_port(port)
+                if result == "ok":
+                    return True
+                # The remembered port gets the busy-port grace for a missing
+                # hello too: it is almost certainly the sidecar, and USB can
+                # enumerate before the firmware is ready to answer.
+                if result == "busy" or port == pref:
+                    count = self._busy.get(port, 0) + 1
+                    if count > BUSY_RETRY_TICKS:
+                        self._busy.pop(port, None)
+                        self._failed.add(port)
+                    else:
+                        self._busy[port] = count
+                else:
+                    self._busy.pop(port, None)
+                    self._failed.add(port)
+            return self.connected
+
+    def reset_scan(self) -> None:
+        """Forget what has been seen/failed; the next tick treats every port as new."""
+        with self._scan_lock:
+            self._seen = set()
+            self._failed = set()
+            self._busy = {}
+            self._fresh = True
+
+    def set_connect_mode(self, mode: str) -> None:
+        """Switch between ``"auto"`` and ``"manual"`` live.
+
+        Switching *to* auto behaves like a fresh start: the next tick probes
+        every present port once (ports that already failed stay skipped).
+        """
+        mode = normalise_connect_mode(mode)
+        if mode == self.connect_mode:
+            return
+        self.connect_mode = mode
+        if mode == "auto":
+            with self._scan_lock:
+                self._fresh = True
+
+    def forget_port(self) -> None:
+        """Drop the remembered port (does not disconnect)."""
+        if self.preferred_port is None:
+            return
+        self.preferred_port = None
+        self._notify_port(None)
+
+    def _notify_port(self, port: str | None) -> None:
+        if self.on_port_remembered is None:
+            return
+        try:
+            self.on_port_remembered(port)
+        except Exception:
+            log.debug("on_port_remembered callback failed", exc_info=True)
 
     def _connect_port(self, port: str) -> bool:
         """Open one port and handshake; False (and closed) if it is not a sidecar."""
+        return self._try_port(port) == "ok"
+
+    def _try_port(self, port: str) -> str:
+        """Open one port and handshake.
+
+        Returns:
+            ``"ok"`` (connected, port remembered), ``"busy"`` (another program
+            has it open — nothing was waited for) or ``"failed"`` (could not
+            open for another reason, or no ``hello`` reply; port closed again).
+        """
         try:
             handle = self._serial_factory(port)
         except Exception as exc:
-            self.last_error = f"{port}: {exc}"
+            busy = _is_busy_error(exc)
+            self.last_error = f"{port}: busy (open in another program)" if busy else f"{port}: {exc}"
             log.info("sidecar open failed: %s", self.last_error)
-            return False
+            return "busy" if busy else "failed"
 
         with self._lock:
             self._serial = handle
@@ -334,15 +569,20 @@ class SidecarDevice:
         self._reader.start()
 
         try:
-            self.info = self.request("hello", timeout=3.0)
+            self.info = self.request("hello", timeout=self.hello_timeout)
             self.get_config()
         except SidecarError as exc:
-            self.last_error = f"handshake failed: {exc}"
+            self.last_error = f"{port}: handshake failed: {exc}"
             self.disconnect()
-            return False
+            return "failed"
         self.last_error = ""
+        self._failed.discard(port)
+        self._busy.pop(port, None)
+        if port != self.preferred_port:
+            self.preferred_port = port
+            self._notify_port(port)
         self._emit({"ev": "connected", "port": port, "fw": self.info.get("fw")})
-        return True
+        return "ok"
 
     def disconnect(self) -> None:
         """Close the port and fail every in-flight request."""
@@ -612,7 +852,28 @@ class SidecarDevice:
             "nodes": self.info.get("nodes") or [],
             "battery_low": bool(self.info.get("low")),
             "error": self.last_error,
+            "connect_mode": self.connect_mode,
+            "last_port": self.preferred_port,
+            "scan_line": self.scan_line(),
         }
+
+    def scan_line(self) -> str:
+        """One human line saying what the bridge is doing about connecting.
+
+        ``"manual — click Connect"``, ``"auto — watching COM10"`` and so on;
+        shown under the Connection card.
+        """
+        mode = self.connect_mode
+        if not self._enabled:
+            return "off"
+        if self.connected:
+            return f"{mode} — connected on {self._port}"
+        pref = self.preferred_port
+        if mode == "manual":
+            return (f"manual — waiting for {pref}, or click Connect" if pref
+                    else "manual — click Connect")
+        return (f"auto — watching {pref} and newly plugged-in boards" if pref
+                else "auto — watching for newly plugged-in boards")
 
     def effective_config(self) -> dict[str, Any]:
         """Device config if connected, otherwise the firmware defaults."""
@@ -626,10 +887,12 @@ class SidecarDevice:
         return serial.Serial(port, self.baudrate, timeout=1)
 
     def _supervise(self) -> None:
-        """Reconnect loop: poll for the device whenever we are not connected."""
+        """Reconnect loop: one :meth:`tick` every :attr:`reconnect_interval`."""
         while not self._stop.is_set():
-            if not self.connected:
-                self.connect()
+            try:
+                self.tick()
+            except Exception:
+                log.debug("sidecar supervisor tick failed", exc_info=True)
             self._stop.wait(self.reconnect_interval)
 
     def _read_loop(self) -> None:

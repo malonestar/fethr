@@ -58,6 +58,20 @@ whichever pair the Chain bus did not claim. Driving G7/G8 — the side-switch se
 lines — breaks the board's ability to power off cleanly, so the firmware never
 touches them.
 
+## Connecting to the app
+
+Over USB the DualKey enumerates as a generic Espressif CDC port (VID `0x303A`,
+no product string on Windows' usbser driver), indistinguishable from any other
+ESP32 board, so the app identifies it by sending `hello` (PROTOCOL.md). It holds a
+candidate port for at most 1.5 s, skips ports another program has open, and
+remembers the port that answered (`sidecar.last_port`). The Sidecar page offers two
+modes (`sidecar.connect_mode`): **automatic** probes the remembered port plus each
+newly plugged-in Espressif port once; **manual** only ever reopens the remembered
+port by itself and leaves everything else to the **Connect** button. If you flash
+other ESP32 boards on the same machine, use manual: a board dropping into its
+bootloader re-enumerates, and automatic mode can mistake it for a new arrival and
+grab it mid-upload.
+
 ## What the FETHR layer does
 
 Key numbering assumes the DualKey sits with its USB-C cable pointing away from you: Key 1 is the left key, Key 2 the right. Cable toward you instead? Turn the DualKey 180° in the app's Layout tab and it swaps them on the device.

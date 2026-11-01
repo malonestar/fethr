@@ -23,6 +23,7 @@ __all__ = [
     "get_mute",
     "get_volume",
     "list_input_devices",
+    "resolve_input_device",
     "set_mute",
     "set_volume",
     "toggle_mute",
@@ -120,34 +121,99 @@ def toggle_mute() -> bool | None:
 # --------------------------------------------------------------------------
 
 
+#: Host-API preference on Windows.  PortAudio lists every microphone once per
+#: host API (MME, DirectSound, WASAPI, WDM-KS), and MME truncates names at 31
+#: characters, so the raw list shows one mic four times, two of them garbled.
+#: WASAPI carries the full device name and is what Windows itself uses.
+_HOSTAPI_PREFERENCE = ("Windows WASAPI", "Windows DirectSound", "MME", "Windows WDM-KS")
+
+#: PortAudio pseudo-devices that are not microphones.
+_PSEUDO_DEVICE_MARKERS = ("sound mapper", "primary sound capture", "primary sound driver")
+
+
+def _pick_devices(devices: list[dict[str, Any]], hostapis: list[dict[str, Any]],
+                  default_index: int | None) -> list[dict[str, Any]]:
+    """Pure half of :func:`list_input_devices` (unit-tested with canned data).
+
+    Keeps input-capable devices from the single best host API that has any,
+    drops PortAudio's mapper/primary pseudo-devices, and de-duplicates by name.
+    """
+    api_names = [str(h.get("name", "")) for h in hostapis]
+    inputs = [
+        (i, d) for i, d in enumerate(devices)
+        if int(d.get("max_input_channels", 0) or 0) > 0
+        and not any(m in str(d.get("name", "")).lower() for m in _PSEUDO_DEVICE_MARKERS)
+    ]
+    if not inputs:
+        return []
+    present = {api_names[int(d.get("hostapi", -1))] if 0 <= int(d.get("hostapi", -1)) < len(api_names)
+               else "" for _, d in inputs}
+    chosen = next((a for a in _HOSTAPI_PREFERENCE if a in present), None)
+    if chosen is not None:
+        inputs = [(i, d) for i, d in inputs
+                  if 0 <= int(d.get("hostapi", -1)) < len(api_names)
+                  and api_names[int(d["hostapi"])] == chosen]
+    # Which name is the system default?  The default index may point at an
+    # MME entry; match by name so the WASAPI twin gets the badge.
+    default_name = ""
+    if default_index is not None and 0 <= default_index < len(devices):
+        default_name = str(devices[default_index].get("name", "")).strip()
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, device in inputs:
+        name = str(device.get("name", f"device {index}")).strip()
+        if name in seen:
+            continue
+        seen.add(name)
+        is_default = bool(default_name) and (
+            name == default_name or name.startswith(default_name) or default_name.startswith(name)
+        )
+        out.append({
+            "index": index,
+            "name": name,
+            "channels": int(device["max_input_channels"]),
+            "default": is_default,
+        })
+    return out
+
+
 def list_input_devices() -> list[dict[str, Any]]:
     """Enumerate microphones as ``{index, name, channels, default}`` dicts.
 
-    Returns an empty list when PortAudio is missing (e.g. a headless CI box).
+    One entry per physical microphone, full name, best host API (see
+    :data:`_HOSTAPI_PREFERENCE`).  Returns an empty list when PortAudio is
+    missing (e.g. a headless CI box).
     """
     try:
         import sounddevice as sd
     except Exception:
         return []
     try:
-        devices = sd.query_devices()
+        devices = [dict(d) for d in sd.query_devices()]
+        hostapis = [dict(h) for h in sd.query_hostapis()]
         default_index = sd.default.device[0] if sd.default.device else None
     except Exception as exc:
         log.debug("query_devices failed: %s", exc)
         return []
-    out: list[dict[str, Any]] = []
-    for index, device in enumerate(devices):
-        if int(device.get("max_input_channels", 0)) <= 0:
-            continue
-        out.append(
-            {
-                "index": index,
-                "name": device.get("name", f"device {index}"),
-                "channels": int(device["max_input_channels"]),
-                "default": index == default_index,
-            }
-        )
-    return out
+    return _pick_devices(devices, hostapis, default_index)
+
+
+def resolve_input_device(name: str | None) -> int | str | None:
+    """Turn a saved microphone name into something ``sounddevice`` can open.
+
+    ``sounddevice`` matches a string against every host API's device list and
+    raises when more than one entry matches — which a full WASAPI name does,
+    because its MME twin is a prefix of it.  So resolve to the index of the
+    entry :func:`list_input_devices` would show, and fall back to the raw name
+    (then to the system default) if it is no longer present.
+    """
+    if not name:
+        return None
+    for device in list_input_devices():
+        if device["name"] == name:
+            return int(device["index"])
+    log.info("microphone %r not found; using the system default", name)
+    return None
 
 
 def default_input_device() -> str | None:

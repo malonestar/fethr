@@ -215,6 +215,15 @@ code, .mono { font-family: var(--mono); font-size: .92em; }
    own, so the chain builder below it starts above the fold. */
 .card-tight { padding: 11px 14px 12px; }
 .card-tight > header { margin-bottom: 9px; }
+/* Connection strip: title on the left, connect-mode picker on the right. */
+.conn-head { display: flex; align-items: center; gap: 10px; }
+.conn-mode { display: flex; align-items: center; gap: 8px; margin: 0; }
+.conn-mode select { width: auto; padding: 5px 9px; }
+.conn-line { margin: 0 0 9px; }
+.linkish {
+  padding: 0; border: 0; background: none;
+  color: var(--accent); font: inherit; cursor: pointer; text-decoration: underline;
+}
 .card h2 { margin: 0; font-size: 14px; font-weight: 650; letter-spacing: -.01em; }
 .card header p { margin: 3px 0 0; font-size: 12px; color: var(--muted); }
 

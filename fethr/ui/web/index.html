@@ -238,15 +238,32 @@
 
         <div id="sidecar-controls">
         <div class="banner warn hidden" id="no-device">
-          <div><strong>No sidecar detected.</strong>
-            Plug the macro-pad in over USB; fethr reconnects on its own. You can
-            still arrange the layout — the controls show the firmware defaults.</div>
+          <div>
+            <span id="no-device-auto"><strong>No sidecar detected.</strong>
+              Plug the macro-pad in over USB; fethr reconnects on its own.</span>
+            <span id="no-device-manual" class="hidden"><strong>Sidecar not connected</strong>
+              — click Connect when it's plugged in.</span>
+            You can still arrange the layout — the controls show the firmware defaults.</div>
         </div>
 
           <section class="card card-tight">
-            <header>
+            <header class="conn-head">
               <h2>Connection</h2>
+              <span class="spacer"></span>
+              <label class="conn-mode" title="Manual never opens a serial port on its own except the remembered one, so flashing other ESP32 boards on this PC is safe.">
+                <span class="muted small">Connect</span>
+                <select data-path="sidecar.connect_mode" id="connect-mode">
+                  <option value="auto">Connect automatically</option>
+                  <option value="manual">Only when I click Connect</option>
+                </select>
+              </label>
             </header>
+            <p class="muted small conn-line">
+              <span id="dev-scan-line">—</span>
+              <span id="dev-last-port-wrap" class="hidden"> · remembered port
+                <b id="dev-last-port"></b>
+                <button type="button" class="linkish" id="btn-forget-port">forget</button></span>
+            </p>
             <div class="stats" id="dev-stats">
               <div class="stat"><span>Port</span><b data-k="port">—</b></div>
               <div class="stat"><span>Firmware</span><b data-k="fw">—</b></div>
@@ -257,7 +274,8 @@
             </div>
             <div class="actions">
               <button class="btn btn-ghost dev-only" id="btn-identify">Identify</button>
-              <button class="btn btn-ghost" id="btn-reconnect">Reconnect</button>
+              <button class="btn" id="btn-connect">Connect</button>
+              <button class="btn btn-ghost hidden" id="btn-reconnect">Reconnect</button>
               <span class="spacer"></span>
               <span class="unsaved hidden" id="unsaved">Unsaved changes on device</span>
               <button class="btn btn-ghost dev-only" id="btn-dev-reset">Reset defaults</button>

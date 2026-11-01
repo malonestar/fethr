@@ -110,6 +110,73 @@ def test_settings_dir_honours_fethr_home(tmp_path, monkeypatch):
     assert (tmp_path / "portable").is_dir()
 
 
+# --------------------------------------------- sidecar connect migration --
+
+
+def test_sidecar_connect_defaults():
+    sidecar = Settings().sidecar
+    assert sidecar.connect_mode == "auto"
+    assert sidecar.last_port is None
+    assert not hasattr(sidecar, "auto_connect")
+
+
+@pytest.mark.parametrize(
+    "old, expected",
+    [(False, "manual"), (True, "auto"), ("false", "manual"), ("true", "auto"),
+     (None, "auto")],
+)
+def test_old_auto_connect_bool_migrates_to_connect_mode(old, expected):
+    settings = Settings.from_dict({"sidecar": {"auto_connect": old}})
+    assert settings.sidecar.connect_mode == expected
+
+
+def test_missing_auto_connect_means_auto():
+    assert Settings.from_dict({"sidecar": {"notify_on_paste": True}}).sidecar.connect_mode == "auto"
+
+
+def test_explicit_connect_mode_wins_over_a_stale_auto_connect():
+    settings = Settings.from_dict({"sidecar": {"auto_connect": True, "connect_mode": "manual"}})
+    assert settings.sidecar.connect_mode == "manual"
+
+
+def test_unknown_connect_mode_loads_as_auto():
+    assert Settings.from_dict({"sidecar": {"connect_mode": "sometimes"}}).sidecar.connect_mode == "auto"
+
+
+def test_migration_does_not_mutate_the_input():
+    raw = {"sidecar": {"auto_connect": False}}
+    Settings.from_dict(raw)
+    assert raw == {"sidecar": {"auto_connect": False}}
+
+
+def test_old_settings_file_round_trips_onto_the_new_keys(tmp_path):
+    """A 0.3.0 settings.json on disk: loads as manual, saves without the old key."""
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({
+        "legacy_imported": "done",
+        "sidecar_enabled": True,
+        "sidecar": {"auto_connect": False, "notify_on_paste": False, "layout": {}},
+    }), encoding="utf-8")
+    settings = load_settings(path)
+    assert settings.sidecar.connect_mode == "manual"
+    assert settings.sidecar_enabled is True
+
+    settings.sidecar.last_port = "COM10"
+    save_settings(settings, path)
+    on_disk = json.loads(path.read_text(encoding="utf-8"))["sidecar"]
+    assert "auto_connect" not in on_disk
+    assert on_disk["connect_mode"] == "manual"
+    assert load_settings(path).sidecar.last_port == "COM10"
+
+
+def test_last_port_accepts_none_through_set_path():
+    settings = Settings()
+    settings.set_path("sidecar.last_port", "COM7")
+    assert settings.sidecar.last_port == "COM7"
+    settings.set_path("sidecar.last_port", None)
+    assert settings.sidecar.last_port is None
+
+
 # ------------------------------------------------------- paths & coercion --
 
 

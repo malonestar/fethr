@@ -393,11 +393,13 @@ class Recorder:
             if self._stream is not None:
                 return
             self._frames = []
+            from .audio import resolve_input_device
+
             self._stream = sd.InputStream(
                 samplerate=self.sample_rate,
                 channels=1,
                 dtype="int16",
-                device=self.device,
+                device=resolve_input_device(self.device) if isinstance(self.device, str) else self.device,
                 callback=self._callback,
             )
             self._stream.start()

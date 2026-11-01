@@ -214,6 +214,7 @@ function renderSettings(settings) {
     k.textContent = (settings.dictation[`hotkey_${k.dataset.slot}`] || '').toUpperCase();
   });
   renderSidecarEnabled(Boolean(settings.sidecar_enabled));
+  renderConnection(state.device);
 }
 
 // ------------------------------------------------------- sidecar master ---
@@ -385,9 +386,40 @@ function renderDeviceStats(dev) {
   set('usb', dev.usb_mv ? `${dev.usb_mv} mV` : '—');
 
   $('#no-device').classList.toggle('hidden', Boolean(dev.connected));
+  renderConnection(dev);
   $$('.dev-only').forEach((node) => { node.disabled = !dev.connected; });
   $$('[data-dev]').forEach((node) => { node.disabled = !dev.connected; });
   if (typeof dev.layer === 'number') setActiveLayer(dev.layer);
+}
+
+/** Connect mode, the scan line, the remembered port and the banner wording.
+ *
+ * The mode comes from settings first (it is what the user just picked) and
+ * the device snapshot second; the scan line and port come from the snapshot,
+ * except that the remembered port also follows settings so "forget" shows at
+ * once. */
+function renderConnection(dev) {
+  dev = dev || state.device || {};
+  const sc = (state.settings && state.settings.sidecar) || {};
+  const mode = sc.connect_mode || dev.connect_mode || 'auto';
+  const manual = mode === 'manual';
+  const lastPort = ('last_port' in sc) ? sc.last_port : dev.last_port;
+
+  $('#no-device-auto').classList.toggle('hidden', manual);
+  $('#no-device-manual').classList.toggle('hidden', !manual);
+
+  let line = dev.scan_line || '';
+  if (!line || (dev.connect_mode && dev.connect_mode !== mode)) {
+    line = manual ? 'manual — click Connect' : 'auto — watching for newly plugged-in boards';
+  }
+  $('#dev-scan-line').textContent = line;
+  $('#dev-last-port').textContent = lastPort || '';
+  $('#dev-last-port-wrap').classList.toggle('hidden', !lastPort);
+
+  $('#btn-connect').classList.toggle('hidden', Boolean(dev.connected));
+  $('#btn-reconnect').classList.toggle('hidden', !dev.connected);
+  const select = $('#connect-mode');
+  if (select && document.activeElement !== select) select.value = mode;
 }
 
 function setActiveLayer(index) {
@@ -708,10 +740,41 @@ function initDeviceButtons() {
     const r = await api.device_identify().catch((e) => ({ ok: false, error: String(e) }));
     toast(r.ok ? 'Sidecar flashing white' : (r.error || 'no device'), r.ok ? 'good' : 'bad');
   });
-  $('#btn-reconnect').addEventListener('click', async () => {
-    const r = await api.device_reconnect().catch((e) => ({ ok: false, error: String(e) }));
-    toast(r.ok ? 'Sidecar connected' : (r.error || 'no sidecar detected'), r.ok ? 'good' : 'bad');
-    refreshDevice();
+  const connectWith = (call, btn) => async () => {
+    btn.disabled = true;
+    const label = btn.textContent;
+    btn.textContent = 'Looking…';
+    try {
+      const r = await call().catch((e) => ({ ok: false, error: String(e) }));
+      toast(r.ok ? 'Sidecar connected' : (r.error || 'no sidecar detected'), r.ok ? 'good' : 'bad');
+    } finally {
+      btn.textContent = label;
+      btn.disabled = false;
+      refreshDevice();
+    }
+  };
+  $('#btn-connect').addEventListener('click',
+    connectWith(() => api.device_connect(), $('#btn-connect')));
+  $('#btn-reconnect').addEventListener('click',
+    connectWith(() => api.device_reconnect(), $('#btn-reconnect')));
+  $('#btn-forget-port').addEventListener('click', async () => {
+    const r = await api.device_forget_port().catch((e) => ({ ok: false, error: String(e) }));
+    if (!r.ok) { toast(r.error || 'could not forget the port', 'bad'); return; }
+    if (r.settings) renderSettings(r.settings);
+    if (r.status) { state.device = { ...(state.device || {}), ...r.status }; renderConnection(state.device); }
+    toast('Remembered port forgotten', 'good');
+  });
+  // The generic [data-path] binder saves the choice; this only repaints the
+  // banner and the scan line once Python has applied it.
+  $('#connect-mode').addEventListener('change', () => {
+    renderConnection(state.device);
+    setTimeout(async () => {
+      try {
+        const dev = await api.device_status();
+        state.device = dev;
+        renderConnection(dev);
+      } catch { /* bridge missing */ }
+    }, 250);
   });
   $('#btn-dev-save').addEventListener('click', async () => {
     const r = await api.device_save().catch((e) => ({ ok: false, error: String(e) }));

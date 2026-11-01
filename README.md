@@ -129,6 +129,8 @@ The order of the chain isn't editable, because it isn't yours to choose — it's
 
 Once it's flashed, turn on **Enable sidecar** in the app's Sidecar page. With it off, fethr never touches a serial port.
 
+**Connecting: automatic or manual.** On Windows every ESP32 board shows up as the same anonymous Espressif serial port, so the only way to find the sidecar is to open a port and say hello — and opening a board someone is flashing breaks the upload. fethr remembers the port the sidecar last answered on and goes back to it after a replug, in either mode. **Connect automatically** (the default) also tries each Espressif port once when it first appears, then leaves it alone while it stays plugged in. **Only when I click Connect** never opens any other port on its own; use it if you flash other ESP32 boards on the same PC, because a board entering its bootloader re-enumerates and can look "new" to automatic mode for a moment. Either way, the **Connect** button on the Sidecar page scans everything once, on request, and the remembered port can be forgotten from the same card.
+
 ## Repo layout
 
 ```

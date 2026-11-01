@@ -45,7 +45,11 @@ class FethrApp:
         self.bus = EventBus()
         self.engine = DictationEngine(self.settings, self.bus)
         self.device = SidecarDevice(
-            on_event=self._on_device_event, enabled=self.settings.sidecar_enabled
+            on_event=self._on_device_event,
+            enabled=self.settings.sidecar_enabled,
+            connect_mode=self.settings.sidecar.connect_mode,
+            preferred_port=self.settings.sidecar.last_port,
+            on_port_remembered=self._on_port_remembered,
         )
 
         self.api = Api(self)
@@ -88,8 +92,10 @@ class FethrApp:
             A process exit code — 0 on a clean run.
         """
         self.engine.start()
-        if self.settings.sidecar.auto_connect:
-            self.device.start()
+        # Always started (a no-op while the master switch is off): "manual"
+        # mode no longer means "never start", it means "never scan" — the
+        # supervisor still reattaches the remembered port after a replug.
+        self.device.start()
         self.tray.start()
 
         threading.Thread(target=self._probe_loop, name="fethr-probe", daemon=True).start()
@@ -149,9 +155,41 @@ class FethrApp:
         self.settings.update(patch)
         save_settings(self.settings, self.settings_file)
         self.engine.apply_settings(self.settings)
+        self._apply_device_settings()
         self.overlay.apply_settings()
         self.tray.refresh()
         return self.settings
+
+    def _apply_device_settings(self) -> None:
+        """Push the sidecar connection preferences into the live bridge."""
+        device = getattr(self, "device", None)
+        if device is None:
+            return
+        device.set_connect_mode(self.settings.sidecar.connect_mode)
+        device.preferred_port = self.settings.sidecar.last_port or None
+
+    def forget_sidecar_port(self) -> None:
+        """Drop the remembered COM port (the UI's "forget" link)."""
+        self.device.forget_port()          # fires _on_port_remembered(None)
+        if self.settings.sidecar.last_port is not None:  # callback-less double
+            self._on_port_remembered(None)
+
+    def _on_port_remembered(self, port: str | None) -> None:
+        """Persist the port the sidecar answered on (or ``None`` once forgotten).
+
+        Runs on the sidecar supervisor / Api thread; only writes the one field
+        and saves, so it never re-arms the engine.
+        """
+        if self.settings.sidecar.last_port == port:
+            return
+        self.settings.sidecar.last_port = port
+        try:
+            save_settings(self.settings, self.settings_file)
+        except OSError:
+            log.warning("could not persist sidecar.last_port", exc_info=True)
+        window = getattr(self, "window", None)
+        if window is not None:
+            window.push({"type": "settings", "settings": self.settings.to_dict()})
 
     def _set_cleanup(self, enabled: bool) -> None:
         self.apply_settings({"dictation": {"cleanup_enabled": bool(enabled)}})
